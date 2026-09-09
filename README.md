@@ -19,6 +19,7 @@ PC/SC インタフェース API です。
 | `example/Program.cs` | 使い方サンプル（C の `main()` 相当） | .NET Framework 4.5 |
 | `example/Example.csproj` | サンプルのプロジェクト。`src/PcscIf.csproj` を参照 | v4.5 / ToolsVersion 12.0 |
 | `test/PcscIfTest/` | テスト用処理。`src/PcscIf.cs` をリンク参照 | .NET 10 |
+| [`protocol.md`](protocol.md) | PC/SC API に渡すパラメータとバイト列の詳細 | — |
 
 `src/PcscIf.cs` は次の C# 6 以降の構文を意図的に使っていません。
 文字列補間 / `nameof` / 式形式メンバ / 自動プロパティ初期化子 / get のみの自動プロパティ /
