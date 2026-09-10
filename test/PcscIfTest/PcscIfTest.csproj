@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    テスト用処理は .NET 10。ライブラリ本体 (../../src/PcscIf.cs) をリンク参照する。
+    テスト用処理は .NET 10。ライブラリ本体 (../../src/*.cs) をリンク参照する。
     本体は .NET Framework 4.5 / C# 5.0 の範囲で書かれているため、そのまま .NET 10 でも通る。
     src/Properties/AssemblyInfo.cs は SDK が同等の属性を自動生成するため含めない。
   -->
@@ -18,7 +18,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\src\PcscIf.cs" Link="PcscIf.cs" />
+    <!-- src 直下の *.cs だけ。Properties\ 配下は含まない。 -->
+    <Compile Include="..\..\src\*.cs" Link="src\%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

@@ -1,7 +1,7 @@
 # DuplicateGuard.md — 重ね置きチェックの仕組み
 
 `Read` / `Write` の直前に走る重ね置き（複数枚同時載置）チェックの詳細です。
-実装は `src/PcscIf.cs` の `DuplicateGuard` / `ScanObservation` / `Pcsc.Execute` / `Pcsc.Gate`。
+実装は `src/Layer1_DuplicateGuard.cs` / `src/Layer1_ScanObservation.cs` / `src/Layer1_Pcsc.cs`（`Pcsc.Execute` / `Pcsc.Gate`）。
 
 バイト列レベルの話は [protocol.md](protocol.md) を参照してください。
 ここでは**なぜその手順なのか**と**どう判定しているのか**を説明します。
@@ -382,12 +382,12 @@ DO ごとに独立して解析し、どちらも 20 バイト未満なので不�
 
 ## 13. 実装対応表
 
-| 役割 | 実装 |
-|---|---|
-| 観測結果の保持（IDm 集合と 3 つの異常フラグ） | `ScanObservation` |
-| Polling ループ | `DuplicateGuard.Collect` |
-| 1 応答からの IDm 抽出（厳密検証） | `Felica.TryExtractLiteSIdm` |
-| フラグの整合性 | `TransceiveResult.FlagCount` |
-| セッション制御と後始末 | `Pcsc.Execute` |
-| 判定 | `Pcsc.Gate` |
-| Polling フレーム生成 | `Felica.BuildPolling` |
+| 役割 | 実装 | ファイル |
+|---|---|---|
+| 観測結果の保持（IDm 集合と 3 つの異常フラグ） | `ScanObservation` | `src/Layer1_ScanObservation.cs` |
+| Polling ループ | `DuplicateGuard.Collect` | `src/Layer1_DuplicateGuard.cs` |
+| 1 応答からの IDm 抽出（厳密検証） | `Felica.TryExtractLiteSIdm` | `src/Layer2_Felica.cs` |
+| フラグの整合性 | `TransceiveResult.FlagCount` | `src/Layer3_TransceiveResult.cs` |
+| セッション制御と後始末 | `Pcsc.Execute` | `src/Layer1_Pcsc.cs` |
+| 判定 | `Pcsc.Gate` | `src/Layer1_Pcsc.cs` |
+| Polling フレーム生成 | `Felica.BuildPolling` | `src/Layer2_Felica.cs` |

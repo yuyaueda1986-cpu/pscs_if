@@ -1,6 +1,6 @@
 # protocol.md — PC/SC API 発行時のパラメータ詳細
 
-`src/PcscIf.cs` が実際に組み立て・解釈しているバイト列の説明です。
+`src/` のソースが実際に組み立て・解釈しているバイト列の説明です。
 ライブラリを使うだけなら読む必要はありません。**PC/SC の API に何を渡しているのか、
 返ってきた値をどう判定しているのかを理解したいとき**の参照用です。
 
@@ -18,15 +18,28 @@
 
 ---
 
-## 0. 全体像 — 4 つの層
+## 0. 全体像 — 層構成
 
-1 回の Read は、次の 4 層が入れ子になったバイト列として送られます。
+ソースは `src/` に層ごとに分割しており、**ファイル名の先頭 `LayerN_` が本書の層番号**と
+対応します。数字が小さいほど呼び出し側（業務アプリ）、大きいほどハードウェア側です。
+
+| 層 | 内容 | 本書 | ファイル |
+|---|---|---|---|
+| 層1 | 公開 API と重ね置き判定（独自のバイト列は持たない） | [DuplicateGuard.md](DuplicateGuard.md) | `Layer1_*.cs` |
+| 層2 | カードコマンド（Polling / Read / Write） | §4 | `Layer2_*.cs` |
+| 層3 | リーダ応答 TLV（`C0` / `92` / `96` / `97` + SW） | §3 | `Layer3_*.cs` |
+| 層4 | リーダのベンダ拡張 APDU（`FF 50 ...`） | §2 | `Layer4_*.cs` |
+| 層5 | PC/SC（winscard）API | §1 | `Layer5_*.cs` |
+
+本書の章は、送信バイト列を**外側から**読む順（層5 → 層2）に並べています。
+
+1 回の Read は、次の層が入れ子になったバイト列として送られます。
 
 ~~~
-┌─ 層1: PC/SC API ─────────────────────────────────────────────┐
+┌─ 層5: PC/SC API ─────────────────────────────────────────────┐
 │ SCardControl(hCard, 制御コード, 送信バッファ, ...)            │
-│  ┌─ 層2: リーダのベンダ拡張 APDU (FF 50 ...) ──────────────┐ │
-│  │  ┌─ 層4: カードコマンド (Polling / Read / Write) ────┐  │ │
+│  ┌─ 層4: リーダのベンダ拡張 APDU (FF 50 ...) ──────────────┐ │
+│  │  ┌─ 層2: カードコマンド (Polling / Read / Write) ────┐  │ │
 │  │  │  06 00 88 B4 01 0F  など                          │  │ │
 │  │  └───────────────────────────────────────────────────┘  │ │
 │  └─────────────────────────────────────────────────────────┘ │
@@ -37,12 +50,13 @@
 └──────────────────────────────────────────────────────────────┘
 ~~~
 
-層 2 と層 4 は**別物**です。層 2 はリーダに「この生フレームを RF に流せ」と指示する
-封筒で、層 4 がその中身（カードが解釈するフレーム）です。
+層 4 と層 2 は**別物**です。層 4 はリーダに「この生フレームを RF に流せ」と指示する
+封筒で、層 2 がその中身（カードが解釈するフレーム）です。
+応答側では、層 3 の TLV のうち `97` の中に層 2 の応答フレームが入っています。
 
 ---
 
-## 1. 層1: PC/SC (winscard) API
+## 1. 層5: PC/SC (winscard) API
 
 ### 1.1 SCardEstablishContext 【規格】
 
@@ -106,7 +120,7 @@ Windows の CCID ドライバは Escape コマンドを既定で拒否するこ�
 
 ---
 
-## 2. 層2: リーダのベンダ拡張 APDU（`FF 50 ...`）【ベンダ】
+## 2. 層4: リーダのベンダ拡張 APDU（`FF 50 ...`）【ベンダ】
 
 `SCardControl` の送信バッファに載せるバイト列です。`FF 50` で始まります。
 
@@ -170,7 +184,7 @@ FF 50 00 01 00 <doLenHi> <doLenLo>
 | 10-13 | timeout | **マイクロ秒・リトルエンディアン** |
 | 14-15 | `95 82` | 送信データのタグ（`82` = 続く 2 バイトが長さ） |
 | 16-17 | frameLen | フレーム長（**ビッグエンディアン**） |
-| 18.. | frame | 層4 のカードコマンド |
+| 18.. | frame | 層2 のカードコマンド |
 | 末尾 | `00 00 00` | 【実測】実機で観測した終端。一般規則ではない |
 
 **エンディアンが混在している点に注意してください。** タイムアウトはリトルエンディアン、
@@ -187,7 +201,7 @@ FF 50 00 01 00 <doLenHi> <doLenLo>
 FF 50 00 01 00 00 11    ← doLen = 11 + 6 = 17 = 0x11
 5F 46 04 A0 86 01 00    ← 100000us = 0x000186A0 → LE: A0 86 01 00
 95 82 00 06             ← フレーム長 6（BE）
-06 00 FF FF 01 00       ← 層4 のフレーム
+06 00 FF FF 01 00       ← 層2 のフレーム
 00 00 00
 ~~~
 
@@ -210,7 +224,7 @@ FF 50 00 01 00 00 11    ← doLen = 11 + 6 = 17 = 0x11
 | `C0` | 3 | 汎用ステータス。1 バイト目は補助情報、2-3 バイト目が SW1 SW2 |
 | `92` | 1 | 最終バイトの受信ビット数（0..7）。**0 以外は端数ビットあり** |
 | `96` | 2（または 1 で値 0） | RF エラーフラグ |
-| `97` | 可変 | **カードからの受信フレーム**（これが層4 の応答） |
+| `97` | 可変 | **カードからの受信フレーム**（これが層2 の応答） |
 
 ### 3.1 長さフィールド
 
@@ -259,7 +273,7 @@ C0 03 00 90 00        ← 汎用ステータス正常
 
 ---
 
-## 4. 層4: カードコマンド 【ベンダ】
+## 4. 層2: カードコマンド 【ベンダ】
 
 `97` の中身、および Transceive で送るフレームの形式です。
 **すべて先頭 1 バイトが LEN（自分自身を含む全長）** です。
@@ -436,23 +450,23 @@ Read を 4 ブロックずつに分ける必要があります。
 
 | 定数 | 値 | 層 | 実装での名前 |
 |---|---|---|---|
-| Share mode | `3` | 1 | `SCARD_SHARE_DIRECT` |
-| 機能一覧 IOCTL | `0x00313520` | 1 | `CM_IOCTL_GET_FEATURE_REQUEST` |
-| Escape フォールバック | `0x003136B0` | 1 | `IOCTL_CCID_ESCAPE_FALLBACK` |
-| Escape 機能タグ | `0x13` | 1 | `FEATURE_CCID_ESC_COMMAND` |
-| Session 開始 / 終了 | `0x81` / `0x82` | 2 | `Manage(tag)` |
-| RF OFF / ON | `0x83` / `0x84` | 2 | `Manage(tag)` |
-| プロトコル切替 | `FF 50 00 02 04 8F 02 03 00 00` | 2 | `BuildFelicaSwitchApdu()` |
-| システムコード | `0x88B4` | 4 | `Felica.LiteSSystemCode` |
-| IC 種別 | `0xF1` | 4 | `Felica.RcS966IcType` |
-| Read コマンド / 応答 | `0x06` / `0x07` | 4 | `FelicaLiteS.CommandRead` / `ResponseRead` |
-| Write コマンド / 応答 | `0x08` / `0x09` | 4 | `FelicaLiteS.CommandWrite` / `ResponseWrite` |
-| Read サービスコード | `0x000B` | 4 | `FelicaLiteS.ReadServiceCode` |
-| Write サービスコード | `0x0009` | 4 | `FelicaLiteS.WriteServiceCode` |
-| ブロックリスト要素 | `0x80` | 4 | （private） |
-| ユーザブロック範囲 | `0x00`..`0x0D` | 4 | `FirstUserBlock` / `LastUserBlock` |
-| Read 上限 | 4 ブロック | 4 | `FelicaLiteS.MaxBlocksPerRead` |
-| Write 上限 | 1 ブロック | 4 | `FelicaLiteS.MaxBlocksPerWrite` |
+| Share mode | `3` | 5 | `SCARD_SHARE_DIRECT` |
+| 機能一覧 IOCTL | `0x00313520` | 5 | `CM_IOCTL_GET_FEATURE_REQUEST` |
+| Escape フォールバック | `0x003136B0` | 5 | `IOCTL_CCID_ESCAPE_FALLBACK` |
+| Escape 機能タグ | `0x13` | 5 | `FEATURE_CCID_ESC_COMMAND` |
+| Session 開始 / 終了 | `0x81` / `0x82` | 4 | `Manage(tag)` |
+| RF OFF / ON | `0x83` / `0x84` | 4 | `Manage(tag)` |
+| プロトコル切替 | `FF 50 00 02 04 8F 02 03 00 00` | 4 | `BuildFelicaSwitchApdu()` |
+| システムコード | `0x88B4` | 2 | `Felica.LiteSSystemCode` |
+| IC 種別 | `0xF1` | 2 | `Felica.RcS966IcType` |
+| Read コマンド / 応答 | `0x06` / `0x07` | 2 | `FelicaLiteS.CommandRead` / `ResponseRead` |
+| Write コマンド / 応答 | `0x08` / `0x09` | 2 | `FelicaLiteS.CommandWrite` / `ResponseWrite` |
+| Read サービスコード | `0x000B` | 2 | `FelicaLiteS.ReadServiceCode` |
+| Write サービスコード | `0x0009` | 2 | `FelicaLiteS.WriteServiceCode` |
+| ブロックリスト要素 | `0x80` | 2 | （private） |
+| ユーザブロック範囲 | `0x00`..`0x0D` | 2 | `FirstUserBlock` / `LastUserBlock` |
+| Read 上限 | 4 ブロック | 2 | `FelicaLiteS.MaxBlocksPerRead` |
+| Write 上限 | 1 ブロック | 2 | `FelicaLiteS.MaxBlocksPerWrite` |
 
 ---
 
@@ -545,11 +559,11 @@ S_PAD0 の内容です。
 
 ## 7. 実装での対応箇所
 
-| 内容 | 実装 |
-|---|---|
-| 層1（P/Invoke・制御コード） | `Interop` |
-| 層2（`FF 50` の封筒） | `Rcs300Transport` |
-| 層3（応答 TLV の解析） | `PcscResponse` / `TransceiveResult.Parse` |
-| 層4（Polling） | `Felica` |
-| 層4（Read / Write） | `FelicaLiteS` |
-| 重ね置き判定 | `DuplicateGuard` / `Pcsc.Gate` |
+| 内容 | 型 | ファイル |
+|---|---|---|
+| 層5（P/Invoke・制御コード） | `Interop` | `src/Layer5_Interop.cs` |
+| 層4（`FF 50` の封筒） | `Rcs300Transport` | `src/Layer4_Rcs300Transport.cs` |
+| 層3（応答 TLV の解析） | `PcscResponse` / `TransceiveResult.Parse` | `src/Layer3_PcscResponse.cs` / `src/Layer3_TransceiveResult.cs` |
+| 層2（Polling） | `Felica` | `src/Layer2_Felica.cs` |
+| 層2（Read / Write） | `FelicaLiteS` | `src/Layer2_FelicaLiteS.cs` |
+| 層1（重ね置き判定） | `DuplicateGuard` / `Pcsc.Gate` | `src/Layer1_DuplicateGuard.cs` / `src/Layer1_Pcsc.cs` |

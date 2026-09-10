@@ -43,8 +43,27 @@
     <Reference Include="System.Core" />
   </ItemGroup>
   <ItemGroup>
-    <!-- C# 処理は 1 本に集約している。ここに列挙されているのはこの 2 ファイルだけ。 -->
-    <Compile Include="PcscIf.cs" />
+    <!--
+      1 ファイル 1 型。ファイル名の LayerN_ が層番号で、数字が小さいほど呼び出し側、
+      大きいほどハードウェア側。層構成の説明は Layer1_Pcsc.cs の先頭コメントを参照。
+    -->
+    <Compile Include="Common_Hex.cs" />
+    <Compile Include="Layer1_DuplicateGuard.cs" />
+    <Compile Include="Layer1_Pcsc.cs" />
+    <Compile Include="Layer1_PcscOptions.cs" />
+    <Compile Include="Layer1_PcscResult.cs" />
+    <Compile Include="Layer1_PcscStatus.cs" />
+    <Compile Include="Layer1_ScanObservation.cs" />
+    <Compile Include="Layer2_Felica.cs" />
+    <Compile Include="Layer2_FelicaLiteS.cs" />
+    <Compile Include="Layer2_FelicaResponseKind.cs" />
+    <Compile Include="Layer3_PcscResponse.cs" />
+    <Compile Include="Layer3_TransceiveResult.cs" />
+    <Compile Include="Layer4_IPcscTransport.cs" />
+    <Compile Include="Layer4_Rcs300Transport.cs" />
+    <Compile Include="Layer4_RfProtocol.cs" />
+    <Compile Include="Layer5_Interop.cs" />
+    <Compile Include="Layer5_PcscException.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
