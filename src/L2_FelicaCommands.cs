@@ -1,21 +1,95 @@
 ﻿// ===========================================================================
-//  Layer2_FelicaLiteS.cs  --  層2 カードコマンド: ユーザデータ領域の Read / Write
+//  L2_FelicaCommands.cs  --  層2 カードコマンド: コマンド生成と応答解析
 //
-//  対象カードのユーザデータ領域のコマンド生成と応答解析。
+//    Felica              Polling（重ね置きチェックの観測手段）
+//    FelicaLiteS         ユーザデータ領域の Read / Write
+//    FelicaResponseKind  読み書き応答の解析結果の分類
 //
-//  Read/Write Without Encryption だけを扱う。MAC 付きアクセス・相互認証・
-//  鍵運用は実装していない。平文アクセスなので改ざん検知や機密保持には使えない。
-//
-//  対象はユーザブロック S_PAD0..S_PAD13 のみ。システムブロック（MC/CK/CKV/ID など）
-//  には意図的にアクセスできない。MC を誤って書くとカードが復旧不能になるため。
-//
-//  層構成は Layer1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §4 を参照。
+//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §4 を参照。
 // ===========================================================================
 
 using System;
+using System.Collections.Generic;
 
 namespace PcscIf
 {
+    // =======================================================================
+    //  Felica  --  Polling（重ね置きチェックの観測手段）
+    //
+    //  対象カードを識別する定数（システムコード・IC 種別）と、Polling フレームの
+    //  組み立て・応答からの IDm 抽出を持つ。
+    // =======================================================================
+
+    public static class Felica
+    {
+        /// <summary>対象カードのシステムコード。</summary>
+        public const ushort LiteSSystemCode = 0x88B4;
+
+        /// <summary>PMm の IC 種別。対象カードは 0xF1。チップ種別の確認であって認証ではない。</summary>
+        public const byte RcS966IcType = 0xF1;
+
+        public const byte TimeSlot16 = 15;
+
+        /// <summary>LEN, 00, システムコード, リクエストコード, タイムスロット。</summary>
+        public static byte[] BuildPolling()
+        {
+            return BuildPolling(LiteSSystemCode, 1, TimeSlot16);
+        }
+
+        public static byte[] BuildPolling(ushort systemCode, byte requestCode, byte timeSlot)
+        {
+            if (requestCode > 2)
+                throw new ArgumentOutOfRangeException("requestCode");
+            if (timeSlot != 0 && timeSlot != 1 && timeSlot != 3 && timeSlot != 7 && timeSlot != 15)
+                throw new ArgumentOutOfRangeException("timeSlot",
+                    "タイムスロットは 0 / 1 / 3 / 7 / 15 のいずれかです。");
+            return new byte[] { 6, 0, (byte)(systemCode >> 8), (byte)systemCode, requestCode, timeSlot };
+        }
+
+        /// <summary>
+        /// 対象カードの完全な Polling 応答（RC=01）だけを厳密に受理する。
+        /// LEN=20, CMD=01, PMm[1]=F1, RD=88B4。1 バイトでもずれたら再同期せず全体を失敗にする。
+        /// </summary>
+        public static bool TryExtractLiteSIdm(byte[] buffer, out List<byte[]> ids)
+        {
+            ids = new List<byte[]>();
+            if (buffer == null || buffer.Length == 0) return false;
+            for (int i = 0; i < buffer.Length; i += 20)
+            {
+                if (buffer.Length - i < 20 || buffer[i] != 20 || buffer[i + 1] != 1
+                    || buffer[i + 11] != RcS966IcType
+                    || buffer[i + 18] != 0x88 || buffer[i + 19] != 0xB4)
+                {
+                    ids.Clear();
+                    return false;
+                }
+                byte[] id = new byte[8];
+                Buffer.BlockCopy(buffer, i + 2, id, 0, 8);
+                ids.Add(id);
+            }
+            return true;
+        }
+
+        public static string IdmToString(byte[] idm)
+        {
+            if (idm == null || idm.Length != 8)
+                throw new ArgumentException("IDm は 8 バイトです。", "idm");
+            return Hex.ToString(idm, 8, false);
+        }
+    }
+
+    // =======================================================================
+    //  FelicaLiteS  --  ユーザデータ領域の Read / Write
+    //
+    //  対象カードのユーザデータ領域のコマンド生成と応答解析。
+    //
+    //  Read/Write Without Encryption だけを扱う。MAC 付きアクセス・相互認証・
+    //  鍵運用は実装していない。平文アクセスなので改ざん検知や機密保持には使えない。
+    //
+    //  対象はユーザブロック S_PAD0..S_PAD13 のみ。システムブロック（MC/CK/CKV/ID など）
+    //  には意図的にアクセスできない。MC を誤って書くとカードが復旧不能になるため。
+    // =======================================================================
+
     public static class FelicaLiteS
     {
         /// <summary>1 ブロックは 16 バイト固定。</summary>
@@ -284,5 +358,27 @@ namespace PcscIf
                 if (response[offset + i] != expected[i]) return false;
             return true;
         }
+    }
+
+    // =======================================================================
+    //  FelicaResponseKind  --  読み書き応答の解析結果の分類
+    //
+    //  FelicaLiteS.ParseReadResponse / ParseWriteResponse の戻り値。
+    // =======================================================================
+
+    /// <summary>
+    /// 読み書き応答の解析結果。
+    /// 「カードが明示的にエラーを返した」と「応答自体が信頼できない」を区別する。
+    /// 前者はカードの状態が確定しているが、後者は確定していない。
+    /// 呼び出し側の復旧判断が変わるため、同じ失敗として潰してはならない。
+    /// </summary>
+    public enum FelicaResponseKind
+    {
+        /// <summary>応答は妥当で、カードもエラーを返していない。</summary>
+        Ok = 0,
+        /// <summary>応答は妥当。カードがステータスフラグでエラーを返した。</summary>
+        CardError = 1,
+        /// <summary>応答が途中切れ・別 IDm・応答コード違い・長さ不整合など。信頼できない。</summary>
+        Malformed = 2
     }
 }

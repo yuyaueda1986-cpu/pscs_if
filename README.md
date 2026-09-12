@@ -4,7 +4,7 @@
 PC/SC インタフェース API です。
 
 [pcsc_dup_guard](../../pcsc_dup_guard) を参考に、業務側から使いやすい 4 つの API に整理しています。
-C# 処理は `src/` に**層ごと・1 ファイル 1 型**で分割しており、ファイル名の先頭 `LayerN_` で
+C# 処理は `src/` に**層と役割ごとに 8 ファイル**にまとめており、ファイル名の先頭 `Ln_` で
 どの層に属するかが分かるようにしています（[§1.1](#11-ソースの層構成)）。
 
 - 本体 : **.NET Framework 4.5 / C# 5.0 / Visual Studio 2013** でビルドできること
@@ -14,7 +14,7 @@ C# 処理は `src/` に**層ごと・1 ファイル 1 型**で分割しており
 
 | パス | 内容 | ターゲット |
 |---|---|---|
-| `src/*.cs` | C# 処理。層ごと・1 ファイル 1 型の 17 ファイル（§1.1） | .NET Framework 4.5 / C# 5.0 |
+| `src/*.cs` | C# 処理。層と役割ごとにまとめた 8 ファイル（§1.1） | .NET Framework 4.5 / C# 5.0 |
 | `src/PcscIf.csproj` | 従来形式（非 SDK）プロジェクト。VS2013 でそのまま開ける | v4.5 / ToolsVersion 12.0 |
 | `PcscIf.sln` | VS2013 用ソリューション（本体 + サンプル） | Format Version 12.00 |
 | `example/Program.cs` | 使い方サンプル（C の `main()` 相当） | .NET Framework 4.5 |
@@ -30,9 +30,14 @@ C# 処理は `src/` に**層ごと・1 ファイル 1 型**で分割しており
 
 ### 1.1 ソースの層構成
 
-ファイル名は `LayerN_型名.cs` です。**数字が小さいほど呼び出し側（業務アプリ）に近く、
+ファイル名は `Ln_役割名.cs` です。**数字が小さいほど呼び出し側（業務アプリ）に近く、
 大きいほどハードウェアに近い**層です。[protocol.md](protocol.md) の章も同じ層番号で書いています。
-読み始めるなら `Layer1_Pcsc.cs` の先頭コメントから。
+読み始めるなら `L1_Pcsc.cs` の先頭コメントから。
+
+関連する型（例: 設定・戻り値・ステータス）は 1 ファイルにまとめていますが、
+クラス・列挙型・インタフェースは別の型のまま分離しています。
+層番号は役割の分類であり、すべての呼び出しが層1 から層5 へ順番に進むことを意味しません
+（例: `Pcsc.ListReaders` は層5 の `Interop` を直接呼びます）。
 
 | 層 | 役割 |
 |---|---|
@@ -50,22 +55,22 @@ C# 処理は `src/` に**層ごと・1 ファイル 1 型**で分割しており
 
 | 層 | ファイル | 型 | 概要 |
 |---|---|---|---|
-| 層1 | `Layer1_Pcsc.cs` | `Pcsc` | **公開 API 本体**。`ListReaders` / `Connect` / `Disconnect` / `Read` / `Write`。Read / Write のたびに Transparent Session を開き、重ね置きチェック → 判定（`Gate`）→ 読み書き → 後始末を 1 つの RF セッション内で行う。Write は 1 ブロックずつ送り、既定で読み戻して一致を確認する |
-| 層1 | `Layer1_PcscStatus.cs` | `PcscStatus`（enum） | API が返すステータス 9 種（`Ok` / `InvalidArgument` / `NotConnected` / `AlreadyConnected` / `ReaderError` / `NoCard` / `MultipleCards` / `Indeterminate` / `CardRejected`） |
-| 層1 | `Layer1_PcscResult.cs` | `PcscResult` | API 共通の戻り値。ステータス・読み出しデータ・IDm・カードのステータスフラグ（未到達なら `0xFF`）・メッセージ・所要時間・原因の例外を保持する |
-| 層1 | `Layer1_PcscOptions.cs` | `PcscOptions` | 動作パラメータ。タイムアウト（既定 300000us）・重ね置きチェックのラウンド数（既定 8）・RF 起動待ち（既定 20ms）・書き込み後の読み戻し（既定 有効）・ログ出力先。範囲外は `Pcsc` のコンストラクタで例外 |
-| 層1 | `Layer1_DuplicateGuard.cs` | `DuplicateGuard`（static） | 重ね置きチェックの **Polling 観測ループ**。指定ラウンド数だけ Polling して IDm の和集合を集め、2 種類観測・RF 衝突・異常応答で打ち切る。判定はしない（[DuplicateGuard.md](DuplicateGuard.md)） |
-| 層1 | `Layer1_ScanObservation.cs` | `ScanObservation` | 1 回のスキャンで観測した事実。異なる IDm の集合と、`Unknown` / `Collision` / `NoResponse` の 3 フラグ |
-| 層2 | `Layer2_Felica.cs` | `Felica`（static） | **Polling** フレームの組み立てと、応答から対象カードの IDm を厳密に取り出す処理。対象カードを識別する定数（システムコード・IC 種別）もここにある |
-| 層2 | `Layer2_FelicaLiteS.cs` | `FelicaLiteS`（static） | ユーザ領域（ブロック `0x00`..`0x0D`）の **Read / Write** コマンドの組み立てと応答解析。ブロック範囲の検証と、1 コマンドあたりの上限（Read 4 / Write 1 ブロック）もここで保証する |
-| 層2 | `Layer2_FelicaResponseKind.cs` | `FelicaResponseKind`（enum） | 読み書き応答の解析結果。`Ok` / `CardError`（カードがエラーを返した）/ `Malformed`（応答自体が信頼できない）を区別する |
-| 層3 | `Layer3_PcscResponse.cs` | `PcscResponse` | リーダ応答の **TLV**（`C0` / `92` / `96` / `97` + SW）を解析する。未知タグや途中で切れた TLV は失敗にする |
-| 層3 | `Layer3_TransceiveResult.cs` | `TransceiveResult` | Transceive 1 回分の結果を `Ok` / `NoResponse` / `Collision` / `Unknown` の 4 フラグに分類し、受信フレームを保持する |
-| 層4 | `Layer4_IPcscTransport.cs` | `IPcscTransport`（interface） | リーダ操作の抽象（Open / セッション開始・終了 / RF ON・OFF / プロトコル切替 / Transceive）。自己テストはこれを模擬実装に差し替える |
-| 層4 | `Layer4_RfProtocol.cs` | `RfProtocol`（enum） | `SwitchProtocol` に渡す RF プロトコルの種別 |
-| 層4 | `Layer4_Rcs300Transport.cs` | `Rcs300Transport` | `IPcscTransport` の**実機実装**。カードフレームを `FF 50` の封筒に包んで Escape（`SCardControl`）で送り、管理コマンドの応答を検証する |
-| 層5 | `Layer5_Interop.cs` | `Interop`（internal static） | winscard.dll の **P/Invoke** 宣言と定数、リーダ名の列挙、Escape 制御コードの取得 |
-| 層5 | `Layer5_PcscException.cs` | `PcscException` | winscard の呼び出し失敗時に投げる例外。戻り値を `ReturnCode` で保持する。`Pcsc` が捕捉して `PcscResult` に変換するため、API 利用者には例外として届かない |
+| 層1 | `L1_Pcsc.cs` | `Pcsc` | **公開 API 本体**。`ListReaders` / `Connect` / `Disconnect` / `Read` / `Write`。Read / Write のたびに Transparent Session を開き、重ね置きチェック → 判定（`Gate`）→ 読み書き → 後始末を 1 つの RF セッション内で行う。Write は 1 ブロックずつ送り、既定で読み戻して一致を確認する |
+| 層1 | `L1_PcscModels.cs` | `PcscOptions` | 動作パラメータ。タイムアウト（既定 300000us）・重ね置きチェックのラウンド数（既定 8）・RF 起動待ち（既定 20ms）・書き込み後の読み戻し（既定 有効）・ログ出力先。範囲外は `Pcsc` のコンストラクタで例外 |
+| 層1 | `L1_PcscModels.cs` | `PcscResult` | API 共通の戻り値。ステータス・読み出しデータ・IDm・カードのステータスフラグ（未到達なら `0xFF`）・メッセージ・所要時間・原因の例外を保持する |
+| 層1 | `L1_PcscModels.cs` | `PcscStatus`（enum） | API が返すステータス 9 種（`Ok` / `InvalidArgument` / `NotConnected` / `AlreadyConnected` / `ReaderError` / `NoCard` / `MultipleCards` / `Indeterminate` / `CardRejected`） |
+| 層1 | `L1_DuplicateGuard.cs` | `DuplicateGuard`（static） | 重ね置きチェックの **Polling 観測ループ**。指定ラウンド数だけ Polling して IDm の和集合を集め、2 種類観測・RF 衝突・異常応答で打ち切る。判定はしない（[DuplicateGuard.md](DuplicateGuard.md)） |
+| 層1 | `L1_DuplicateGuard.cs` | `ScanObservation` | 1 回のスキャンで観測した事実。異なる IDm の集合と、`Unknown` / `Collision` / `NoResponse` の 3 フラグ |
+| 層2 | `L2_FelicaCommands.cs` | `Felica`（static） | **Polling** フレームの組み立てと、応答から対象カードの IDm を厳密に取り出す処理。対象カードを識別する定数（システムコード・IC 種別）もここにある |
+| 層2 | `L2_FelicaCommands.cs` | `FelicaLiteS`（static） | ユーザ領域（ブロック `0x00`..`0x0D`）の **Read / Write** コマンドの組み立てと応答解析。ブロック範囲の検証と、1 コマンドあたりの上限（Read 4 / Write 1 ブロック）もここで保証する |
+| 層2 | `L2_FelicaCommands.cs` | `FelicaResponseKind`（enum） | 読み書き応答の解析結果。`Ok` / `CardError`（カードがエラーを返した）/ `Malformed`（応答自体が信頼できない）を区別する |
+| 層3 | `L3_PcscResponse.cs` | `PcscResponse` | リーダ応答の **TLV**（`C0` / `92` / `96` / `97` + SW）を解析する。未知タグや途中で切れた TLV は失敗にする |
+| 層3 | `L3_PcscResponse.cs` | `TransceiveResult` | Transceive 1 回分の結果を `Ok` / `NoResponse` / `Collision` / `Unknown` の 4 フラグに分類し、受信フレームを保持する |
+| 層4 | `L4_PcscTransport.cs` | `IPcscTransport`（interface） | リーダ操作の抽象（Open / セッション開始・終了 / RF ON・OFF / プロトコル切替 / Transceive）。自己テストはこれを模擬実装に差し替える |
+| 層4 | `L4_PcscTransport.cs` | `RfProtocol`（enum） | `SwitchProtocol` に渡す RF プロトコルの種別 |
+| 層4 | `L4_PcscTransport.cs` | `Rcs300Transport` | `IPcscTransport` の**実機実装**。カードフレームを `FF 50` の封筒に包んで Escape（`SCardControl`）で送り、管理コマンドの応答を検証する |
+| 層5 | `L5_PcscNative.cs` | `Interop`（internal static） | winscard.dll の **P/Invoke** 宣言と定数、リーダ名の列挙、Escape 制御コードの取得 |
+| 層5 | `L5_PcscNative.cs` | `PcscException` | winscard の呼び出し失敗時に投げる例外。戻り値を `ReturnCode` で保持する。`Pcsc` が捕捉して `PcscResult` に変換するため、API 利用者には例外として届かない |
 | 共通 | `Common_Hex.cs` | `Hex`（static） | バイト列と 16 進文字列の相互変換、バイト列の比較 |
 | — | `Properties/AssemblyInfo.cs` | — | アセンブリ属性（タイトル・説明・GUID・バージョン 1.0.0.0）。従来形式プロジェクト用で、テストプロジェクトには含めない |
 
@@ -267,7 +272,7 @@ dotnet run --project test/PcscIfTest -- selftest
 
 | 項目 | 状況 |
 |---|---|
-| `src/*.cs`（層ごとに分割した 17 ファイル）が .NET Framework 4.5 / C# 5.0 で警告 0・エラー 0 でコンパイルされる | 確認済み |
+| `src/*.cs`（層と役割ごとにまとめた 8 ファイル）が .NET Framework 4.5 / C# 5.0 で警告 0・エラー 0 でコンパイルされる | 確認済み |
 | `src/PcscIf.csproj`（従来形式）が .NET Framework 付属の MSBuild と C# 5 コンパイラ（csc 4.8）でビルドできる | 確認済み |
 | `example/Program.cs` が .NET Framework 4.5 / C# 5.0 でコンパイルされる | 確認済み |
 | リーダ不要の自己テスト 172 件 | 全件 PASS |

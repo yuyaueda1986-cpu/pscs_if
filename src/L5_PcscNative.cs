@@ -1,7 +1,10 @@
 ﻿// ===========================================================================
-//  Layer5_Interop.cs  --  層5 PC/SC: winscard.dll の P/Invoke と制御コード
+//  L5_PcscNative.cs  --  層5 PC/SC: winscard.dll との接続
 //
-//  層構成は Layer1_Pcsc.cs 先頭のコメント、パラメータの詳細は protocol.md §1 を参照。
+//    Interop        winscard.dll の P/Invoke と制御コード
+//    PcscException  winscard の戻り値を運ぶ例外
+//
+//  層構成は L1_Pcsc.cs 先頭のコメント、パラメータの詳細は protocol.md §1 を参照。
 // ===========================================================================
 
 using System;
@@ -11,6 +14,10 @@ using System.Text;
 
 namespace PcscIf
 {
+    // =======================================================================
+    //  Interop  --  winscard.dll の P/Invoke と制御コード
+    // =======================================================================
+
     internal static class Interop
     {
         public const int SCARD_S_SUCCESS = 0x00000000;
@@ -111,6 +118,23 @@ namespace PcscIf
                 i += len;
             }
             return null;
+        }
+    }
+
+    // =======================================================================
+    //  PcscException  --  winscard の戻り値を運ぶ例外
+    //
+    //  winscard の関数が SCARD_S_SUCCESS 以外を返したときに、その戻り値を ReturnCode として保持する。
+    // =======================================================================
+
+    public sealed class PcscException : Exception
+    {
+        private readonly int _returnCode;
+        public int ReturnCode { get { return _returnCode; } }
+        public PcscException(string message, int rc)
+            : base(message + " (0x" + rc.ToString("X8") + ")")
+        {
+            _returnCode = rc;
         }
     }
 }

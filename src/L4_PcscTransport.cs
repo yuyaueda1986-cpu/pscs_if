@@ -1,9 +1,12 @@
 ﻿// ===========================================================================
-//  Layer4_Rcs300Transport.cs  --  層4 リーダ制御: ベンダ拡張 APDU（FF 50）による実機トランスポート
+//  L4_PcscTransport.cs  --  層4 リーダ制御: トランスポートの契約と実機実装
 //
-//  層2 のカードフレームを FF 50 の封筒に包み、層5 の SCardControl（Escape）で送る。
-//  応答は層3 の PcscResponse / TransceiveResult で解釈する。
-//  層構成は Layer1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §2 を参照。
+//    IPcscTransport   RF トランスポートの抽象（テストで差し替える境界）
+//    RfProtocol       RF プロトコルの種別
+//    Rcs300Transport  ベンダ拡張 APDU（FF 50）による実機トランスポート
+//
+//  インタフェースと実装は同じファイルに置くが、別の型として分離したままにしている。
+//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §2 を参照。
 // ===========================================================================
 
 using System;
@@ -11,6 +14,43 @@ using System.Collections.Generic;
 
 namespace PcscIf
 {
+    // =======================================================================
+    //  IPcscTransport  --  RF トランスポートの抽象
+    //
+    //  実機用の実装は Rcs300Transport（このファイルの末尾）。
+    //  テストではこのインタフェースを差し替えて、リーダ無しで上位層を検証する。
+    // =======================================================================
+
+    /// <summary>
+    /// RF トランスポート。実機は <see cref="Rcs300Transport"/>。
+    /// テストではこのインタフェースを差し替えてリーダ無しで検証する。
+    /// </summary>
+    public interface IPcscTransport : IDisposable
+    {
+        void Open(string readerName);
+        void StartTransparentSession();
+        void TurnOffRf();
+        void SwitchProtocol(RfProtocol protocol);
+        void TurnOnRf();
+        TransceiveResult Transceive(byte[] frame, int timeoutUs);
+        void EndTransparentSession();
+    }
+
+    // =======================================================================
+    //  RfProtocol  --  RF プロトコルの種別
+    //
+    //  IPcscTransport.SwitchProtocol の引数。
+    // =======================================================================
+
+    public enum RfProtocol { TypeA = 0, TypeB = 1, Iso15693 = 2, Felica = 3 }
+
+    // =======================================================================
+    //  Rcs300Transport  --  ベンダ拡張 APDU（FF 50）による実機トランスポート
+    //
+    //  層2 のカードフレームを FF 50 の封筒に包み、層5 の SCardControl（Escape）で送る。
+    //  応答は層3 の PcscResponse / TransceiveResult で解釈する。
+    // =======================================================================
+
     /// <summary>
     /// 対象リーダの Transparent Session プロファイル。対象カード専用。
     /// CRC はリーダ側が付与するため、ソフトウェア CRC は扱わない。

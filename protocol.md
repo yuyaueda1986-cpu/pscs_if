@@ -20,16 +20,16 @@
 
 ## 0. 全体像 — 層構成
 
-ソースは `src/` に層ごとに分割しており、**ファイル名の先頭 `LayerN_` が本書の層番号**と
+ソースは `src/` に層ごとに分けており、**ファイル名の先頭 `Ln_` が本書の層番号**と
 対応します。数字が小さいほど呼び出し側（業務アプリ）、大きいほどハードウェア側です。
 
 | 層 | 内容 | 本書 | ファイル |
 |---|---|---|---|
-| 層1 | 公開 API と重ね置き判定（独自のバイト列は持たない） | [DuplicateGuard.md](DuplicateGuard.md) | `Layer1_*.cs` |
-| 層2 | カードコマンド（Polling / Read / Write） | §4 | `Layer2_*.cs` |
-| 層3 | リーダ応答 TLV（`C0` / `92` / `96` / `97` + SW） | §3 | `Layer3_*.cs` |
-| 層4 | リーダのベンダ拡張 APDU（`FF 50 ...`） | §2 | `Layer4_*.cs` |
-| 層5 | PC/SC（winscard）API | §1 | `Layer5_*.cs` |
+| 層1 | 公開 API と重ね置き判定（独自のバイト列は持たない） | [DuplicateGuard.md](DuplicateGuard.md) | `L1_Pcsc.cs` / `L1_PcscModels.cs` / `L1_DuplicateGuard.cs` |
+| 層2 | カードコマンド（Polling / Read / Write） | §4 | `L2_FelicaCommands.cs` |
+| 層3 | リーダ応答 TLV（`C0` / `92` / `96` / `97` + SW） | §3 | `L3_PcscResponse.cs` |
+| 層4 | リーダのベンダ拡張 APDU（`FF 50 ...`） | §2 | `L4_PcscTransport.cs` |
+| 層5 | PC/SC（winscard）API | §1 | `L5_PcscNative.cs` |
 
 本書の章は、送信バイト列を**外側から**読む順（層5 → 層2）に並べています。
 
@@ -561,9 +561,9 @@ S_PAD0 の内容です。
 
 | 内容 | 型 | ファイル |
 |---|---|---|
-| 層5（P/Invoke・制御コード） | `Interop` | `src/Layer5_Interop.cs` |
-| 層4（`FF 50` の封筒） | `Rcs300Transport` | `src/Layer4_Rcs300Transport.cs` |
-| 層3（応答 TLV の解析） | `PcscResponse` / `TransceiveResult.Parse` | `src/Layer3_PcscResponse.cs` / `src/Layer3_TransceiveResult.cs` |
-| 層2（Polling） | `Felica` | `src/Layer2_Felica.cs` |
-| 層2（Read / Write） | `FelicaLiteS` | `src/Layer2_FelicaLiteS.cs` |
-| 層1（重ね置き判定） | `DuplicateGuard` / `Pcsc.Gate` | `src/Layer1_DuplicateGuard.cs` / `src/Layer1_Pcsc.cs` |
+| 層5（P/Invoke・制御コード） | `Interop` | `src/L5_PcscNative.cs` |
+| 層4（`FF 50` の封筒） | `Rcs300Transport` | `src/L4_PcscTransport.cs` |
+| 層3（応答 TLV の解析） | `PcscResponse` / `TransceiveResult.Parse` | `src/L3_PcscResponse.cs` |
+| 層2（Polling） | `Felica` | `src/L2_FelicaCommands.cs` |
+| 層2（Read / Write） | `FelicaLiteS` | `src/L2_FelicaCommands.cs` |
+| 層1（重ね置き判定） | `DuplicateGuard` / `Pcsc.Gate` | `src/L1_DuplicateGuard.cs` / `src/L1_Pcsc.cs` |

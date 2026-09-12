@@ -1,7 +1,7 @@
 ﻿// ===========================================================================
-//  Layer1_Pcsc.cs  --  層1 公開 API: Pcsc 本体（Connect / Disconnect / Read / Write）
+//  L1_Pcsc.cs  --  層1 公開 API: Pcsc 本体（Connect / Disconnect / Read / Write）
 //
-//  対象カード : 特定の IC カード（システムコード・IC 種別で判別。値は Layer2_Felica.cs の定数を参照）
+//  対象カード : 特定の IC カード（システムコード・IC 種別で判別。値は L2_FelicaCommands.cs の Felica の定数を参照）
 //  対象リーダ : CCID Escape / Transparent Session に対応した PC/SC リーダ
 //
 //  ビルド前提 : .NET Framework 4.5 / C# 5.0 / Visual Studio 2013
@@ -12,16 +12,21 @@
 //               （Array.Empty は .NET Framework 4.6 以降のため 4.5 では使えない）
 //
 //  ---- 層構成 --------------------------------------------------------------
-//  ファイル名の LayerN_ が層番号。数字が小さいほど呼び出し側（業務アプリ）に近く、
-//  大きいほどハードウェアに近い。1 ファイル 1 型で、ファイル名の後半が型名。
+//  ファイル名の Ln_ が層番号。数字が小さいほど呼び出し側（業務アプリ）に近く、
+//  大きいほどハードウェアに近い。関連する型を役割ごとに 1 ファイルにまとめているが、
+//  型そのものは分離したまま。
 //
-//    層1 公開 API          Pcsc / PcscStatus / PcscResult / PcscOptions
-//        重ね置きチェック  DuplicateGuard / ScanObservation
-//    層2 カードコマンド    Felica（Polling） / FelicaLiteS（Read / Write） / FelicaResponseKind
-//    層3 リーダ応答 TLV    PcscResponse / TransceiveResult
-//    層4 リーダ制御        IPcscTransport / RfProtocol / Rcs300Transport（FF 50 の封筒）
-//    層5 PC/SC             Interop（winscard.dll の P/Invoke） / PcscException
-//    共通                  Hex（Common_Hex.cs）
+//    層1 公開 API          L1_Pcsc.cs            Pcsc
+//                          L1_PcscModels.cs      PcscOptions / PcscResult / PcscStatus
+//        重ね置きチェック  L1_DuplicateGuard.cs  DuplicateGuard / ScanObservation
+//    層2 カードコマンド    L2_FelicaCommands.cs  Felica（Polling） / FelicaLiteS（Read / Write） / FelicaResponseKind
+//    層3 リーダ応答 TLV    L3_PcscResponse.cs    PcscResponse / TransceiveResult
+//    層4 リーダ制御        L4_PcscTransport.cs   IPcscTransport / RfProtocol / Rcs300Transport（FF 50 の封筒）
+//    層5 PC/SC             L5_PcscNative.cs      Interop（winscard.dll の P/Invoke） / PcscException
+//    共通                  Common_Hex.cs         Hex
+//
+//  層番号は役割の分類であり、すべての呼び出しが層1 から層5 へ順番に進むわけではない
+//  （例: ListReaders は層5 の Interop を直接呼ぶ）。
 //
 //  送信時は 層2 のカードフレームを 層4 が FF 50 の封筒に包み、層5 の SCardControl で送る。
 //  応答は 層3 が TLV を解釈し、中のカード応答フレームを 層2 が解析する。
