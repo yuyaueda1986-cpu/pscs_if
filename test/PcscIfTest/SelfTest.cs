@@ -4,11 +4,14 @@
 //  既知ベクタ（コマンド組み立て）、応答パーサの異常系、そして
 //  IPcscTransport を差し替えた模擬セッションでの Connect / Disconnect /
 //  Read / Write と重ね置き検出を検証する。
+//  加えて、重ね置きの観測ループ単体、並行呼び出し、16 進変換、
+//  実機トランスポートのうちリーダを使わずに確認できる部分を検証する。
 //  終了コードは失敗数。
 // ===========================================================================
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using PcscIf;
 
 namespace PcscIfTest
@@ -25,9 +28,11 @@ namespace PcscIfTest
 
             Section("1. コマンド組み立ての既知ベクタ");
             CommandVectors();
+            CommandLengthLimits();
 
             Section("2. PC/SC 応答パーサ（fail-closed）");
             ResponseParsing();
+            ResponseParsingDetails();
 
             Section("3. 対象カードの Polling 応答の抽出");
             PollingExtraction();
@@ -40,15 +45,31 @@ namespace PcscIfTest
 
             Section("6. Connect / Disconnect");
             ConnectLifecycle();
+            ConnectFailurePaths();
 
             Section("7. Read と重ね置きチェック");
             ReadTests();
+            ReadFailurePaths();
 
             Section("8. Write と重ね置きチェック");
             WriteTests();
+            WriteFailurePaths();
 
             Section("9. オプション検証とログ");
             OptionTests();
+            OptionBoundariesAndResult();
+
+            Section("10. 重ね置きの観測（DuplicateGuard / ScanObservation）");
+            ObservationTests();
+
+            Section("11. 並行呼び出し");
+            ConcurrencyTests();
+
+            Section("12. 16 進変換（Hex）");
+            HexTests();
+
+            Section("13. 実機トランスポートのリーダ不要な検査");
+            OfflineTransportTests();
 
             Console.WriteLine();
             Console.WriteLine(_failed == 0
@@ -695,6 +716,509 @@ namespace PcscIfTest
         }
 
         // ===================================================================
+        //  1. 追加: フレーム長の上限
+        // ===================================================================
+
+        private static void CommandLengthLimits()
+        {
+            // doLen = 11 + frameLen が 2 バイト（最大 FFFF）に収まる最大のフレーム長が 65524。
+            byte[] maxApdu = Rcs300Transport.BuildTransceiveApdu(new byte[65524], 100000);
+            Check("Transceive は最大長 65524 バイトのフレームを許可（データ長 FFFF）",
+                maxApdu.Length == 18 + 65524 + 3
+                && maxApdu[5] == 0xFF && maxApdu[6] == 0xFF
+                && maxApdu[16] == 0xFF && maxApdu[17] == 0xF4);
+            Check("65525 バイトのフレームは拒否（データ長が 2 バイトに収まらない）",
+                ThrowsArgument(delegate { Rcs300Transport.BuildTransceiveApdu(new byte[65525], 100000); }));
+        }
+
+        // ===================================================================
+        //  2. 追加: TLV の長さ表現と各 DO の細部
+        // ===================================================================
+
+        private static void ResponseParsingDetails()
+        {
+            byte[] card = Card(1);
+            byte[] good = Response(card);
+            byte[] sw = new byte[] { 0x90, 0x00 };
+            byte[] c0Ok = new byte[] { 0xC0, 3, 0, 0x90, 0 };
+
+            TransceiveResult long81 = Parse(Concat(Concat(new byte[] { 0x97, 0x81, 0x14 }, card), sw));
+            Check("長さ 81 形式の DO97 を受理",
+                long81.Ok && long81.Frames.Count == 1 && SeqEqual(long81.Frames[0], card));
+            TransceiveResult long82 = Parse(Concat(Concat(new byte[] { 0x97, 0x82, 0x00, 0x14 }, card), sw));
+            Check("長さ 82 形式の DO97 を受理",
+                long82.Ok && long82.Frames.Count == 1 && SeqEqual(long82.Frames[0], card));
+            Check("長さバイトが欠けた 81 形式は拒否",
+                Parse(new byte[] { 0x97, 0x81, 0x90, 0 }).Unknown);
+            Check("長さバイトが欠けた 82 形式は拒否",
+                Parse(new byte[] { 0x97, 0x82, 0x00, 0x90, 0 }).Unknown);
+            Check("81 形式でも宣言長が残りより長ければ拒否",
+                Parse(Concat(Concat(new byte[] { 0x97, 0x81, 0x15 }, card), sw)).Unknown);
+            Check("長さ 83 以上の長形式は拒否",
+                Parse(Concat(Concat(new byte[] { 0x97, 0x83, 0x00, 0x00, 0x14 }, card), sw)).Unknown);
+
+            TransceiveResult rf1 = Parse(Concat(Concat(Concat(c0Ok, new byte[] { 0x96, 1, 0, 0x97, 0x14 }), card), sw));
+            Check("DO96 の 1 バイト形式（エラーなし）を受理", rf1.Ok);
+            TransceiveResult rf1Error = Parse(Concat(Concat(Concat(c0Ok, new byte[] { 0x96, 1, 2, 0x97, 0x14 }), card), sw));
+            Check("DO96 の 1 バイト形式でエラー値は不正（衝突にもしない）",
+                rf1Error.Unknown && !rf1Error.Collision);
+            // 上位ビットだけを立てると、検査が無くても RfErrors != 0 で Unknown になり区別できない。
+            // 衝突ビットと同時に立て、「衝突」ではなく「不正」になることで検査の存在を確かめる。
+            byte[] upperNibble = (byte[])good.Clone(); upperNibble[10] = 0x12;
+            TransceiveResult reserved = Parse(upperNibble);
+            Check("DO96 の上位 4 ビットが立っていたら衝突ビットがあっても不正",
+                reserved.Unknown && !reserved.Collision);
+            Check("DO96 の長さ 3 は拒否", Parse(new byte[] { 0x96, 3, 0, 0, 0, 0x90, 0 }).Unknown);
+
+            byte[] c0Nonzero = (byte[])good.Clone(); c0Nonzero[2] = 1;
+            Check("C0 が 9000 なのに先頭バイトが 0 以外なら拒否", Parse(c0Nonzero).Unknown);
+            Check("C0 の長さ 3 以外は拒否", Parse(new byte[] { 0xC0, 2, 0x90, 0, 0x90, 0 }).Unknown);
+            Check("長さ 0 の DO97 は拒否", Parse(new byte[] { 0x97, 0, 0x90, 0 }).Unknown);
+            Check("DO92 の長さ 1 以外は拒否", Parse(new byte[] { 0x92, 2, 0, 0, 0x90, 0 }).Unknown);
+
+            Check("管理コマンドは受信データ付きの応答を拒否",
+                Throws(delegate { Rcs300Transport.ValidateManagementResponse(good, "test"); }));
+            Check("管理コマンドは RF エラー付きの応答を拒否",
+                Throws(delegate {
+                    Rcs300Transport.ValidateManagementResponse(
+                        new byte[] { 0xC0, 3, 0, 0x90, 0, 0x96, 2, 2, 0, 0x90, 0 }, "test"); }));
+            Check("管理コマンドは端数ビット付きの応答を拒否",
+                Throws(delegate {
+                    Rcs300Transport.ValidateManagementResponse(
+                        new byte[] { 0xC0, 3, 0, 0x90, 0, 0x92, 1, 1, 0x90, 0 }, "test"); }));
+        }
+
+        // ===================================================================
+        //  6. 追加: 接続・切断の失敗経路と既定コンストラクタ
+        // ===================================================================
+
+        private static void ConnectFailurePaths()
+        {
+            Pcsc noTransport = new Pcsc(FakeOptions(), delegate { return (IPcscTransport)null; });
+            PcscResult nullFactory = noTransport.Connect("fake reader");
+            Check("トランスポートを生成できなければ ReaderError",
+                nullFactory.Status == PcscStatus.ReaderError && nullFactory.Error is InvalidOperationException);
+            Check("トランスポート生成失敗後は未接続のまま",
+                !noTransport.IsConnected && noTransport.ReaderName == "");
+
+            FakeTransport failDispose = new FakeTransport(1) { FailDispose = true };
+            Pcsc pcsc = Connected(failDispose);
+            PcscResult disconnect = pcsc.Disconnect();
+            Check("Dispose が例外を投げたら Disconnect は ReaderError",
+                disconnect.Status == PcscStatus.ReaderError && disconnect.Error is InvalidOperationException);
+            Check("Disconnect の失敗後もハンドルは手放し、未接続になる",
+                failDispose.Disposed && !pcsc.IsConnected && pcsc.ReaderName == "");
+            Check("Disconnect の失敗後に再接続できる",
+                pcsc.Connect("fake reader").Ok && pcsc.IsConnected);
+
+            Pcsc defaults = new Pcsc();
+            Check("new Pcsc() はリーダに触れずに生成でき、未接続",
+                !defaults.IsConnected && defaults.ReaderName == ""
+                && defaults.Read().Status == PcscStatus.NotConnected);
+            Check("new Pcsc(null) は既定オプションで生成できる",
+                !Throws(delegate { new Pcsc((PcscOptions)null); }));
+            Check("未接続での Dispose は例外を投げない",
+                !Throws(delegate { defaults.Dispose(); }));
+        }
+
+        // ===================================================================
+        //  7. 追加: Read の応答形式の異常と、例外時の後始末
+        // ===================================================================
+
+        private static void ReadFailurePaths()
+        {
+            // ---- Read コマンドへの応答がフレーム 1 個の Ok でない（TrySingleFrame が false）----
+            FakeTransport noResp = new FakeTransport(1) { ReadResponseOverride = Empty() };
+            PcscResult noRespResult = Connected(noResp).Read();
+            Check("Read コマンドへの無応答は Indeterminate（解析できない）",
+                noRespResult.Status == PcscStatus.Indeterminate
+                && noRespResult.Message.Contains("解析できない")
+                && noRespResult.Idm == "0100000000000001");
+
+            byte[] frame = ReadFrame(Idm(1), Payload(0x10, 16));
+            FakeTransport twoFrames = new FakeTransport(1) { ReadResponseOverride = Parse(Response(frame, frame)) };
+            Check("Read 応答のフレームが 2 個なら Indeterminate",
+                Connected(twoFrames).Read().Status == PcscStatus.Indeterminate);
+
+            TransceiveResult both = new TransceiveResult();
+            both.Ok = true; both.NoResponse = true;
+            both.Frames = new List<byte[]> { frame };
+            FakeTransport contradictory = new FakeTransport(1) { ReadResponseOverride = both };
+            Check("Read 応答のフラグが矛盾していたら Indeterminate",
+                Connected(contradictory).Read().Status == PcscStatus.Indeterminate);
+
+            // ---- 例外で中断したときの後始末 ----
+            FakeTransport failSwitch = new FakeTransport(1) { FailSwitch = true };
+            PcscResult switchResult = Connected(failSwitch).Read();
+            Check("切替失敗時も RF OFF とセッション終了を試み、RF ON と Polling はしない",
+                failSwitch.StartCalls == 1 && failSwitch.OffCalls == 2 && failSwitch.EndCalls == 1
+                && failSwitch.OnCalls == 0 && failSwitch.Polls == 0);
+            Check("例外で中断した結果は原因例外と操作名を保持する",
+                switchResult.Error is NotSupportedException
+                && switchResult.Message.StartsWith("read: ", StringComparison.Ordinal));
+
+            FakeTransport failEnd = new FakeTransport(1) { FailEnd = true };
+            Connected(failEnd).Read();
+            Check("セッション終了の失敗時は RF OFF とセッション終了をもう一度試みる",
+                failEnd.Reads == 1 && failEnd.OffCalls == 3 && failEnd.EndCalls == 2);
+        }
+
+        // ===================================================================
+        //  8. 追加: 2 ブロック目以降の失敗、読み戻しの失敗、応答形式の異常
+        // ===================================================================
+
+        private static void WriteFailurePaths()
+        {
+            byte[] initial = Payload(0xA0, 32);
+            byte[] newData = Payload(0x20, 32);
+
+            // ---- 2 ブロック目でカードが拒否 ----
+            FakeTransport rejectSecond = new FakeTransport(1) { RejectWriteForBlock = 1 };
+            rejectSecond.Store(0, initial);
+            PcscResult rejected = Connected(rejectSecond).Write(newData);
+            Check("2 ブロック目の拒否は CardRejected（SF は実値）",
+                rejected.Status == PcscStatus.CardRejected
+                && rejected.StatusFlag1 == 0xFF && rejected.StatusFlag2 == 0xA2);
+            Check("2 ブロック目の拒否は「先行ブロックは書き換わっている」と伝える",
+                rejected.Message.Contains("先行ブロックは書き換わっている"));
+            Check("2 ブロック目の拒否時、1 ブロック目は書き換わり 2 ブロック目は元のまま",
+                SeqEqual(rejectSecond.Read(0, 16), Take(newData, 16))
+                && SeqEqual(rejectSecond.Read(16, 16), Skip(initial, 16)));
+            Check("書き込みの拒否後は読み戻しを行わない",
+                rejectSecond.Writes == 2 && rejectSecond.Reads == 0);
+
+            FakeTransport rejectFirst = new FakeTransport(1) { RejectWriteForBlock = 0 };
+            PcscResult rejectedFirst = Connected(rejectFirst).Write(newData);
+            Check("1 ブロック目の拒否では「先行ブロック」に触れず、後続ブロックを送らない",
+                rejectedFirst.Status == PcscStatus.CardRejected
+                && !rejectedFirst.Message.Contains("先行ブロック") && rejectFirst.Writes == 1);
+
+            // ---- 2 ブロック目の応答が壊れている ----
+            FakeTransport truncSecond = new FakeTransport(1) { TruncateWriteForBlock = 1 };
+            PcscResult truncated = Connected(truncSecond).Write(newData);
+            Check("2 ブロック目の応答不正は Indeterminate（SF は報告しない）",
+                truncated.Status == PcscStatus.Indeterminate
+                && truncated.StatusFlag1 == 0xFF && truncated.StatusFlag2 == 0xFF);
+            Check("2 ブロック目の応答不正は「書き込まれたか不明」「先行ブロックは書き換わっている」と伝える",
+                truncated.Message.Contains("書き込まれたか不明")
+                && truncated.Message.Contains("先行ブロックは書き換わっている"));
+
+            // ---- 読み戻しの失敗と不一致の区別 ----
+            FakeTransport verifyRejected = new FakeTransport(1) { RejectRead = true };
+            PcscResult verifyFail = Connected(verifyRejected).Write(Payload(0x30, 16));
+            Check("読み戻しの Read が拒否されたら Indeterminate",
+                verifyFail.Status == PcscStatus.Indeterminate
+                && verifyRejected.Writes == 1 && verifyRejected.Reads == 1);
+            Check("読み戻し失敗は「読み戻しに失敗」と伝え、読み戻しの SF を報告する",
+                verifyFail.Message.Contains("読み戻しに失敗")
+                && verifyFail.StatusFlag1 == 0xFF && verifyFail.StatusFlag2 == 0xA1);
+
+            FakeTransport dropped = new FakeTransport(1) { SilentlyDropWrite = true };
+            dropped.Store(0, initial);
+            PcscResult mismatch = Connected(dropped).Write(newData);
+            Check("読み戻し不一致は「一致しない」と伝え、読み戻し失敗と区別する",
+                mismatch.Status == PcscStatus.Indeterminate
+                && mismatch.Message.Contains("一致しない")
+                && !mismatch.Message.Contains("読み戻しに失敗"));
+
+            // ---- Write コマンドへの応答がフレーム 1 個の Ok でない（TrySingleFrame が false）----
+            FakeTransport writeNoResp = new FakeTransport(1) { WriteResponseOverride = Empty() };
+            PcscResult writeNoRespResult = Connected(writeNoResp).Write(newData);
+            Check("Write コマンドへの無応答は Indeterminate（解析できない・書き込まれたか不明）",
+                writeNoRespResult.Status == PcscStatus.Indeterminate
+                && writeNoRespResult.Message.Contains("解析できない")
+                && writeNoRespResult.Message.Contains("書き込まれたか不明"));
+            Check("Write 応答を解析できなければ後続ブロックも読み戻しも送らない",
+                writeNoResp.Writes == 1 && writeNoResp.Reads == 0);
+
+            // 読み戻しを有効にしたままだと、フレーム数の検査が無くても読み戻し不一致で
+            // Indeterminate になり、この経路を検証できない。読み戻しを切って確認する。
+            byte[] okFrame = StatusFrame(0x09, Idm(1), 0, 0);
+            FakeTransport writeTwoFrames = new FakeTransport(1) { WriteResponseOverride = Parse(Response(okFrame, okFrame)) };
+            PcscOptions noVerify = FakeOptions();
+            noVerify.VerifyAfterWrite = false;
+            Pcsc twoFramePcsc = new Pcsc(noVerify, writeTwoFrames.Factory());
+            twoFramePcsc.Connect("fake reader");
+            Check("Write 応答のフレームが 2 個なら Indeterminate（読み戻しに頼らず判定）",
+                twoFramePcsc.Write(Payload(0x30, 16)).Status == PcscStatus.Indeterminate);
+        }
+
+        // ===================================================================
+        //  9. 追加: オプションの境界と既定値、RF 待ち、結果の書式
+        // ===================================================================
+
+        private static void OptionBoundariesAndResult()
+        {
+            PcscOptions defaults = new PcscOptions();
+            Check("既定値はラウンド 8 / 300000us / RF 待ち 20ms / 読み戻し有効 / ログなし",
+                defaults.DuplicateCheckRounds == 8 && defaults.TransceiveTimeoutUs == 300000
+                && defaults.RfSettleDelayMs == 20 && defaults.VerifyAfterWrite && defaults.Log == null);
+
+            Check("ラウンド数 2（下限）は許可", !Throws(delegate { new Pcsc(Options(2, 300000, 0)); }));
+            Check("ラウンド数 64（上限）は許可", !Throws(delegate { new Pcsc(Options(64, 300000, 0)); }));
+            Check("タイムアウト 100000（下限）は許可", !Throws(delegate { new Pcsc(Options(8, 100000, 0)); }));
+            Check("タイムアウト 1000000（上限）は許可", !Throws(delegate { new Pcsc(Options(8, 1000000, 0)); }));
+            Check("RF 待ち 0（下限）は許可", !Throws(delegate { new Pcsc(Options(8, 300000, 0)); }));
+            Check("RF 待ち 1000（上限）は許可", !Throws(delegate { new Pcsc(Options(8, 300000, 1000)); }));
+            Check("RF 待ち -1 は拒否",
+                Throws<ArgumentOutOfRangeException>(delegate { new Pcsc(Options(8, 300000, -1)); }));
+            Check("範囲外の例外は ArgumentOutOfRangeException",
+                Throws<ArgumentOutOfRangeException>(delegate { new Pcsc(Options(1, 300000, 0)); }));
+
+            FakeTransport defaultRounds = new FakeTransport(1);
+            Pcsc withNull = new Pcsc(null, defaultRounds.Factory());
+            withNull.Connect("fake reader");
+            Check("options に null を渡すと既定のラウンド数 8 で Polling する",
+                withNull.Read().Ok && defaultRounds.Polls == 8);
+
+            // ---- RF 待ちと所要時間 ----
+            FakeTransport settle = new FakeTransport(1);
+            Pcsc settling = new Pcsc(Options(2, 300000, 50), settle.Factory());
+            settling.Connect("fake reader");
+            PcscResult settled = settling.Read();
+            Check("RF 待ちを指定すると待ってから処理する（ElapsedMs >= 40）",
+                settled.Ok && settled.ElapsedMs >= 40);
+            Check("I/O 前の引数エラーの ElapsedMs は 0",
+                Connected(new FakeTransport(1)).Read(0, 0).ElapsedMs == 0);
+
+            // ---- PcscResult.ToString（ログの 1 行の書式）----
+            FakeTransport shown = new FakeTransport(1);
+            shown.Store(0, Payload(0x10, 16));
+            PcscResult okRead = Connected(shown).Read();
+            Check("ToString（Ok）はステータス・IDm・SF・データ長・メッセージ・所要時間の順",
+                okRead.ToString() == "Ok idm=0100000000000001 SF=0000 len=16 ("
+                    + okRead.Message + ") " + okRead.ElapsedMs + "ms");
+            PcscResult notConnected = New(new FakeTransport(1)).Read();
+            Check("ToString は IDm・SF（FFFF）・データが無ければ省略する",
+                notConnected.ToString() == "NotConnected ("
+                    + notConnected.Message + ") " + notConnected.ElapsedMs + "ms");
+            PcscResult rejectedRead = Connected(new FakeTransport(1) { RejectRead = true }).Read();
+            Check("ToString は SF の片方でも FF 以外なら表示する",
+                rejectedRead.ToString() == "CardRejected idm=0100000000000001 SF=FFA1 ("
+                    + rejectedRead.Message + ") " + rejectedRead.ElapsedMs + "ms");
+            Check("失敗時の Data は null ではなく長さ 0、IDm 未確定なら空文字",
+                notConnected.Data != null && notConnected.Data.Length == 0 && notConnected.Idm == "");
+        }
+
+        // ===================================================================
+        //  10. 重ね置きの観測（DuplicateGuard / ScanObservation）
+        //
+        //  Pcsc を通さずに観測ループを直接呼び、打ち切り条件とフラグを確認する。
+        // ===================================================================
+
+        private static void ObservationTests()
+        {
+            const int rounds = 8;
+            const int timeout = 300000;
+
+            Check("Collect(null) は ArgumentNullException",
+                Throws<ArgumentNullException>(delegate { DuplicateGuard.Collect(null, rounds, timeout); }));
+
+            FakeTransport single = new FakeTransport(1);
+            ScanObservation one = DuplicateGuard.Collect(single, rounds, timeout);
+            Check("1 枚なら全ラウンド Polling し、同じ IDm は 1 種類として数える",
+                single.Polls == rounds && one.Count == 1
+                && !one.Unknown && !one.Collision && !one.NoResponse);
+            Check("SingleIdm は観測した IDm を返す", SeqEqual(one.SingleIdm, Idm(1)));
+
+            FakeTransport two = new FakeTransport(1) { SecondCard = 2 };
+            ScanObservation stacked = DuplicateGuard.Collect(two, rounds, timeout);
+            Check("1 応答で 2 種類を観測したら 1 ラウンドで打ち切る",
+                two.Polls == 1 && stacked.Count == 2);
+
+            FakeTransport swapped = new FakeTransport(1);
+            swapped.Script(Ok(3), Ok(3), Ok(1), Ok(2));
+            ScanObservation later = DuplicateGuard.Collect(swapped, rounds, timeout);
+            Check("ラウンドをまたいで 2 種類になった時点で打ち切る",
+                swapped.Polls == 3 && later.Count == 2);
+            Check("IdList は観測順ではなく昇順",
+                later.IdList.Count == 2
+                && later.IdList[0] == "0100000000000001" && later.IdList[1] == "0100000000000003");
+
+            FakeTransport collide = new FakeTransport(1);
+            collide.Script(Ok(1), Parse(Collision()));
+            ScanObservation collided = DuplicateGuard.Collect(collide, rounds, timeout);
+            Check("RF 衝突を観測したらそのラウンドで打ち切る",
+                collide.Polls == 2 && collided.Collision && !collided.Unknown && collided.Count == 1);
+
+            FakeTransport garbage = new FakeTransport(1);
+            garbage.Script(Ok(1), Parse(Response(new byte[] { 1, 2, 3 })));
+            ScanObservation malformed = DuplicateGuard.Collect(garbage, rounds, timeout);
+            Check("対象外の応答を観測したら Unknown で打ち切る（観測済みの IDm は残る）",
+                garbage.Polls == 2 && malformed.Unknown && malformed.Count == 1);
+
+            FakeTransport nullResult = new FakeTransport(1);
+            nullResult.Script(new TransceiveResult[] { null });
+            ScanObservation nulled = DuplicateGuard.Collect(nullResult, rounds, timeout);
+            Check("Transceive が null を返したら Unknown で打ち切る",
+                nullResult.Polls == 1 && nulled.Unknown && nulled.Count == 0);
+
+            FakeTransport none = new FakeTransport(1) { NoCard = true };
+            ScanObservation empty = DuplicateGuard.Collect(none, rounds, timeout);
+            Check("無応答では打ち切らず全ラウンド続ける",
+                none.Polls == rounds && empty.NoResponse && !empty.Unknown && empty.Count == 0);
+
+            FakeTransport late = new FakeTransport(1);
+            late.Script(Empty(), Ok(1));
+            ScanObservation lateCard = DuplicateGuard.Collect(late, 4, timeout);
+            Check("無応答の後に応答したカードも数える（NoResponse も残る）",
+                late.Polls == 4 && lateCard.Count == 1 && lateCard.NoResponse);
+
+            Check("SingleIdm は 0 種類なら InvalidOperationException",
+                Throws<InvalidOperationException>(delegate { GC.KeepAlive(new ScanObservation().SingleIdm); }));
+            Check("SingleIdm は 2 種類なら InvalidOperationException",
+                Throws<InvalidOperationException>(delegate { GC.KeepAlive(stacked.SingleIdm); }));
+        }
+
+        // ===================================================================
+        //  11. 並行呼び出し
+        //
+        //  Pcsc は内部で lock しているので、同じインスタンスを複数スレッドから呼んでも
+        //  セッション（重ね置きチェック → 読み書き → 後始末）が重ならないはず。
+        //  FakeTransport はセッション開始と Transceive でスレッドを譲り、重なりを起こしやすくする。
+        // ===================================================================
+
+        private static void ConcurrencyTests()
+        {
+            const int threads = 4;
+            const int perThread = 25;
+            const int total = threads * perThread;
+
+            FakeTransport shared = new FakeTransport(1) { YieldInSession = true };
+            Pcsc pcsc = Connected(shared);
+            int readOk = 0;
+            Thread[] readers = new Thread[threads];
+            for (int t = 0; t < threads; t++)
+            {
+                readers[t] = new Thread(delegate()
+                {
+                    for (int i = 0; i < perThread; i++)
+                        if (pcsc.Read().Ok) Interlocked.Increment(ref readOk);
+                });
+            }
+            for (int t = 0; t < threads; t++) readers[t].Start();
+            for (int t = 0; t < threads; t++) readers[t].Join();
+
+            Check("複数スレッドから同時に Read してもセッションは重ならない", !shared.Overlap);
+            Check("同時 Read はすべて Ok", readOk == total);
+            Check("同時 Read でもコマンドの取りこぼしがない",
+                shared.StartCalls == total && shared.EndCalls == total
+                && shared.Reads == total && shared.Polls == 2 * total);
+
+            // 書き込みと読み戻しの間に別スレッドの書き込みが割り込むと、読み戻しが一致しなくなる。
+            FakeTransport mixed = new FakeTransport(1) { YieldInSession = true };
+            Pcsc mixedPcsc = Connected(mixed);
+            int mixedOk = 0;
+            Thread[] workers = new Thread[threads];
+            for (int t = 0; t < threads; t++)
+            {
+                byte fill = (byte)(0x10 * (t + 1));
+                bool writer = t % 2 == 0;
+                workers[t] = new Thread(delegate()
+                {
+                    byte[] data = Payload(fill, 2 * FelicaLiteS.BlockSize);
+                    for (int i = 0; i < perThread; i++)
+                    {
+                        PcscResult r = writer ? mixedPcsc.Write(data) : mixedPcsc.Read(0, 2);
+                        if (r.Ok) Interlocked.Increment(ref mixedOk);
+                    }
+                });
+            }
+            for (int t = 0; t < threads; t++) workers[t].Start();
+            for (int t = 0; t < threads; t++) workers[t].Join();
+
+            Check("Read と Write を同時に呼んでもセッションは重ならない", !mixed.Overlap);
+            Check("Read と Write を同時に呼んでも、読み戻しを含めてすべて Ok", mixedOk == total);
+        }
+
+        // ===================================================================
+        //  12. 16 進変換（Hex）
+        // ===================================================================
+
+        private static void HexTests()
+        {
+            byte[] sample = new byte[] { 0x0A, 0xFF, 0x00 };
+
+            Check("ToString は大文字 2 桁を空白区切りで出力", Hex.ToString(sample) == "0A FF 00");
+            Check("空配列の ToString は空文字", Hex.ToString(new byte[0]) == "");
+            Check("ToString(null) は \"(null)\"",
+                Hex.ToString(null) == "(null)" && Hex.ToString(null, 3, false) == "(null)");
+            Check("長さ指定・区切りなしの ToString", Hex.ToString(sample, 2, false) == "0AFF");
+            Check("範囲外の長さ指定は全体を出力",
+                Hex.ToString(sample, 5, true) == "0A FF 00" && Hex.ToString(sample, -1, true) == "0A FF 00");
+
+            Check("Parse は大文字・小文字と空白を受け付ける", SeqEqual(Hex.Parse("0A ff 00"), sample));
+            Check("Parse はハイフン・コロン区切りを受け付ける", SeqEqual(Hex.Parse("0A-FF:00"), sample));
+            Check("Parse は先頭の 0x / 0X を受け付ける",
+                SeqEqual(Hex.Parse("0x0AFF00"), sample) && SeqEqual(Hex.Parse("0X0aff00"), sample));
+            Check("Parse(\"\") は長さ 0", Hex.Parse("").Length == 0);
+            Check("奇数桁は ArgumentException", ThrowsArgument(delegate { Hex.Parse("ABC"); }));
+            Check("16 進以外の文字は ArgumentException", ThrowsArgument(delegate { Hex.Parse("0G"); }));
+            Check("Parse(null) は ArgumentNullException",
+                Throws<ArgumentNullException>(delegate { Hex.Parse(null); }));
+            byte[] all = Payload(0, 256);
+            Check("全 256 値で ToString と Parse が往復一致", SeqEqual(Hex.Parse(Hex.ToString(all)), all));
+
+            Check("SequenceEqual は内容が同じなら true",
+                Hex.SequenceEqual(new byte[] { 1, 2 }, new byte[] { 1, 2 }));
+            Check("SequenceEqual は長さや内容が違えば false",
+                !Hex.SequenceEqual(new byte[] { 1, 2 }, new byte[] { 1, 2, 3 })
+                && !Hex.SequenceEqual(new byte[] { 1, 2 }, new byte[] { 1, 3 }));
+            Check("SequenceEqual は null を含めば null 同士でも false（fail-closed）",
+                !Hex.SequenceEqual(null, null) && !Hex.SequenceEqual(null, new byte[0]));
+        }
+
+        // ===================================================================
+        //  13. 実機トランスポートのリーダ不要な検査
+        //
+        //  Rcs300Transport のうち、winscard.dll を呼ぶ前に決まる振る舞いだけを確認する。
+        //  最後の 1 件だけは OS の PC/SC 層を呼ぶが、存在しないリーダ名なので必ず失敗する。
+        // ===================================================================
+
+        private static void OfflineTransportTests()
+        {
+            Check("Open(null) は ArgumentException（winscard を呼ばない）",
+                ThrowsArgument(delegate { new Rcs300Transport().Open(null); }));
+            Check("Open(空白のみ) は ArgumentException",
+                ThrowsArgument(delegate { new Rcs300Transport().Open("   "); }));
+            Check("対象外プロトコルへの切替は NotSupportedException（送信前に拒否）",
+                Throws<NotSupportedException>(delegate { new Rcs300Transport().SwitchProtocol(RfProtocol.TypeA); }));
+            Check("未オープンでのセッション開始は InvalidOperationException",
+                Throws<InvalidOperationException>(delegate { new Rcs300Transport().StartTransparentSession(); }));
+            Check("未オープンでの RF ON / OFF は InvalidOperationException",
+                Throws<InvalidOperationException>(delegate { new Rcs300Transport().TurnOnRf(); })
+                && Throws<InvalidOperationException>(delegate { new Rcs300Transport().TurnOffRf(); }));
+            Check("未オープンでの Transceive は InvalidOperationException",
+                Throws<InvalidOperationException>(delegate {
+                    new Rcs300Transport().Transceive(Felica.BuildPolling(), 300000); }));
+            Check("未オープンの Dispose は例外を投げない",
+                !Throws(delegate { new Rcs300Transport().Dispose(); }));
+            Check("送信失敗の後の Dispose も例外を投げず、2 回呼んでもよい",
+                !Throws(delegate {
+                    Rcs300Transport t = new Rcs300Transport();
+                    try { t.TurnOnRf(); } catch (InvalidOperationException) { }
+                    try { t.StartTransparentSession(); } catch (InvalidOperationException) { }
+                    t.Dispose();
+                    t.Dispose();
+                }));
+
+            Check("Escape 制御コードの算出（SCARD_CTL_CODE）",
+                Interop.ScardCtlCode(3500) == 0x003136B0
+                && Interop.IOCTL_CCID_ESCAPE_FALLBACK == 0x003136B0
+                && Interop.CM_IOCTL_GET_FEATURE_REQUEST == 0x00313520);
+            PcscException error = new PcscException("SCardConnect", unchecked((int)0x8010000C));
+            Check("PcscException は戻り値を ReturnCode と 16 進のメッセージで保持",
+                error.ReturnCode == unchecked((int)0x8010000C)
+                && error.Message == "SCardConnect (0x8010000C)");
+
+            // ここだけ OS の PC/SC 層を呼ぶ。リーダの有無や winscard.dll の有無に関係なく失敗する。
+            Pcsc real = new Pcsc(FakeOptions());
+            PcscResult bogus = real.Connect("PcscIfTest: no such reader");
+            Check("既定トランスポートで存在しないリーダ名への Connect は ReaderError",
+                bogus.Status == PcscStatus.ReaderError && bogus.Error != null && !real.IsConnected);
+        }
+
+        // ===================================================================
         //  模擬トランスポート
         // ===================================================================
 
@@ -722,6 +1246,22 @@ namespace PcscIfTest
             internal int DropWriteForBlock = -1;
             /// <summary>Polling のタイミングで、この配列の先頭を 0xFF に書き換える。</summary>
             internal byte[] MutateOnPoll;
+            /// <summary>このブロックの書き込みだけ SF1=FF SF2=A2 で拒否する（メモリには書かない）。-1 で無効。</summary>
+            internal int RejectWriteForBlock = -1;
+            /// <summary>このブロックの書き込みだけ、メモリには書いたうえで応答を 11 バイトに切り詰める。-1 で無効。</summary>
+            internal int TruncateWriteForBlock = -1;
+            /// <summary>null 以外なら、Read コマンドにこの結果をそのまま返す。</summary>
+            internal TransceiveResult ReadResponseOverride;
+            /// <summary>null 以外なら、Write コマンドにこの結果をそのまま返す（メモリには書かない）。</summary>
+            internal TransceiveResult WriteResponseOverride;
+            /// <summary>Dispose で例外を投げる（Disposed は立てたうえで投げる）。</summary>
+            internal bool FailDispose;
+            /// <summary>セッション開始と Transceive でスレッドを譲り、並行呼び出しの重なりを起こしやすくする。</summary>
+            internal bool YieldInSession;
+            /// <summary>2 つ以上のセッションが同時に開いていたら true。</summary>
+            internal bool Overlap;
+            private readonly object _sessionLock = new object();
+            private int _activeSessions;
             internal int Polls, Reads, Writes;
             internal int StartCalls, EndCalls, OffCalls, OnCalls, SwitchCalls;
             internal bool Disposed;
@@ -760,10 +1300,23 @@ namespace PcscIfTest
             {
                 if (FailOpen) throw new PcscException("SCardConnect", unchecked((int)0x8010000C));
             }
-            public void StartTransparentSession() { StartCalls++; }
+            public void StartTransparentSession()
+            {
+                lock (_sessionLock)
+                {
+                    StartCalls++;
+                    if (_activeSessions > 0) Overlap = true;
+                    _activeSessions++;
+                }
+                if (YieldInSession) Thread.Sleep(0);
+            }
             public void EndTransparentSession()
             {
-                EndCalls++;
+                lock (_sessionLock)
+                {
+                    EndCalls++;
+                    if (_activeSessions > 0) _activeSessions--;
+                }
                 if (FailEnd) throw new InvalidOperationException("end failure");
             }
             public void TurnOffRf() { OffCalls++; }
@@ -774,10 +1327,15 @@ namespace PcscIfTest
                 if (protocol != RfProtocol.Felica || FailSwitch)
                     throw new NotSupportedException("switch failure");
             }
-            public void Dispose() { Disposed = true; }
+            public void Dispose()
+            {
+                Disposed = true;
+                if (FailDispose) throw new InvalidOperationException("dispose failure");
+            }
 
             public TransceiveResult Transceive(byte[] frame, int timeoutUs)
             {
+                if (YieldInSession) Thread.Sleep(0);
                 if (SeqEqual(frame, Felica.BuildPolling()))
                 {
                     Polls++;
@@ -796,6 +1354,7 @@ namespace PcscIfTest
                 if (frame[1] == FelicaLiteS.CommandRead)
                 {
                     Reads++;
+                    if (ReadResponseOverride != null) return ReadResponseOverride;
                     if (RejectRead) return Parse(Response(StatusFrame(0x07, idm, 0xFF, 0xA1)));
                     int blockCount = frame[13];
                     byte[] data = new byte[blockCount * FelicaLiteS.BlockSize];
@@ -810,17 +1369,21 @@ namespace PcscIfTest
                 if (frame[1] == FelicaLiteS.CommandWrite)
                 {
                     Writes++;
+                    if (WriteResponseOverride != null) return WriteResponseOverride;
                     if (RejectWrite) return Parse(Response(StatusFrame(0x09, idm, 0xFF, 0xA2)));
                     int blockCount = frame[13];
                     // 実機の対象カードは 1 コマンド 1 ブロックしか受け付けず、
                     // 2 ブロック目で SF1=02 SF2=A8 を返す。その挙動を再現する。
                     if (blockCount != 1) return Parse(Response(StatusFrame(0x09, idm, 0x02, 0xA8)));
                     byte blockNumber = frame[15];
+                    if (blockNumber == RejectWriteForBlock)
+                        return Parse(Response(StatusFrame(0x09, idm, 0xFF, 0xA2)));
                     if (!SilentlyDropWrite && blockNumber != DropWriteForBlock)
                         Buffer.BlockCopy(frame, 16, _memory,
                             blockNumber * FelicaLiteS.BlockSize, FelicaLiteS.BlockSize);
                     byte[] writeFrame = StatusFrame(0x09, idm, 0, 0);
-                    if (TruncateWriteResponse) writeFrame = Take(writeFrame, 11);
+                    if (TruncateWriteResponse || blockNumber == TruncateWriteForBlock)
+                        writeFrame = Take(writeFrame, 11);
                     return Parse(Response(writeFrame));
                 }
                 throw new InvalidOperationException("unexpected command");
@@ -968,6 +1531,14 @@ namespace PcscIfTest
         {
             try { action(); return false; }
             catch (ArgumentException) { return true; }
+            catch { return false; }
+        }
+
+        /// <summary>指定した型（またはその派生）の例外が発生したときだけ true。</summary>
+        private static bool Throws<T>(Action action) where T : Exception
+        {
+            try { action(); return false; }
+            catch (T) { return true; }
             catch { return false; }
         }
 

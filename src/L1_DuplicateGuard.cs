@@ -8,7 +8,7 @@
 //  ここでは観測だけを行い、判定は Pcsc.Gate（L1_Pcsc.cs）で行う。
 //  Polling フレームは層2 の Felica（L2_FelicaCommands.cs）で組み立て、
 //  層4 の IPcscTransport（L4_PcscTransport.cs）で送る。
-//  仕組みの詳細は DuplicateGuard.md。層構成は L1_Pcsc.cs 先頭のコメントを参照。
+//  仕組みの詳細は docs/DuplicateGuard.md。層構成は L1_Pcsc.cs 先頭のコメントを参照。
 // ===========================================================================
 
 using System;

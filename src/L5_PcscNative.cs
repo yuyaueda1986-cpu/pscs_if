@@ -4,7 +4,7 @@
 //    Interop        winscard.dll の P/Invoke と制御コード
 //    PcscException  winscard の戻り値を運ぶ例外
 //
-//  層構成は L1_Pcsc.cs 先頭のコメント、パラメータの詳細は protocol.md §1 を参照。
+//  層構成は L1_Pcsc.cs 先頭のコメント、パラメータの詳細は docs/protocol.md §1 を参照。
 // ===========================================================================
 
 using System;

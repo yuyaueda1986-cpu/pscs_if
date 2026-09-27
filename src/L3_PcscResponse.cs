@@ -4,7 +4,7 @@
 //    PcscResponse      応答バイト列の TLV 解析
 //    TransceiveResult  Transceive 1 回分の観測結果
 //
-//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §3 を参照。
+//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は docs/protocol.md §3 を参照。
 // ===========================================================================
 
 using System;

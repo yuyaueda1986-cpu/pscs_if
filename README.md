@@ -6,6 +6,7 @@ PC/SC インタフェース API です。
 [pcsc_dup_guard](../../pcsc_dup_guard) を参考に、業務側から使いやすい 4 つの API に整理しています。
 C# 処理は `src/` に**層と役割ごとに 8 ファイル**にまとめており、ファイル名の先頭 `Ln_` で
 どの層に属するかが分かるようにしています（[§1.1](#11-ソースの層構成)）。
+README 以外のドキュメントは [`docs/`](docs/) にあります。
 
 - 本体 : **.NET Framework 4.5 / C# 5.0 / Visual Studio 2013** でビルドできること
 - テスト : .NET 10 コンソールアプリ（リーダ不要の自己テスト + 実機確認）
@@ -20,8 +21,10 @@ C# 処理は `src/` に**層と役割ごとに 8 ファイル**にまとめて�
 | `example/Program.cs` | 使い方サンプル（C の `main()` 相当） | .NET Framework 4.5 |
 | `example/Example.csproj` | サンプルのプロジェクト。`src/PcscIf.csproj` を参照 | v4.5 / ToolsVersion 12.0 |
 | `test/PcscIfTest/` | テスト用処理。`src/*.cs` をリンク参照 | .NET 10 |
-| [`protocol.md`](protocol.md) | PC/SC API に渡すパラメータとバイト列の詳細 | — |
-| [`DuplicateGuard.md`](DuplicateGuard.md) | 重ね置きチェックの仕組みと判定ロジック | — |
+| [`docs/protocol.md`](docs/protocol.md) | PC/SC API に渡すパラメータとバイト列の詳細 | — |
+| [`docs/DuplicateGuard.md`](docs/DuplicateGuard.md) | 重ね置きチェックの仕組みと判定ロジック | — |
+| [`docs/UnitTest.md`](docs/UnitTest.md) | リーダ不要の自己テスト全件について、1 件ごとの入力・期待結果・確認の意図 | — |
+| [`docs/source/`](docs/source/) | ソースファイルごとの詳細な解説（§1.2 / §1.3 の「解説」列からリンク） | — |
 
 `src/` 配下のファイルは次の C# 6 以降の構文を意図的に使っていません。
 文字列補間 / `nameof` / 式形式メンバ / 自動プロパティ初期化子 / get のみの自動プロパティ /
@@ -31,8 +34,8 @@ C# 処理は `src/` に**層と役割ごとに 8 ファイル**にまとめて�
 ### 1.1 ソースの層構成
 
 ファイル名は `Ln_役割名.cs` です。**数字が小さいほど呼び出し側（業務アプリ）に近く、
-大きいほどハードウェアに近い**層です。[protocol.md](protocol.md) の章も同じ層番号で書いています。
-読み始めるなら `L1_Pcsc.cs` の先頭コメントから。
+大きいほどハードウェアに近い**層です。[docs/protocol.md](docs/protocol.md) の章も同じ層番号で書いています。
+読み始めるなら `L1_Pcsc.cs` の先頭コメントか、その解説 [docs/source/L1_Pcsc.md](docs/source/L1_Pcsc.md) から。
 
 関連する型（例: 設定・戻り値・ステータス）は 1 ファイルにまとめていますが、
 クラス・列挙型・インタフェースは別の型のまま分離しています。
@@ -53,34 +56,34 @@ C# 処理は `src/` に**層と役割ごとに 8 ファイル**にまとめて�
 
 ### 1.2 ライブラリのソース（`src/`）
 
-| 層 | ファイル | 型 | 概要 |
-|---|---|---|---|
-| 層1 | `L1_Pcsc.cs` | `Pcsc` | **公開 API 本体**。`ListReaders` / `Connect` / `Disconnect` / `Read` / `Write`。Read / Write のたびに Transparent Session を開き、重ね置きチェック → 判定（`Gate`）→ 読み書き → 後始末を 1 つの RF セッション内で行う。Write は 1 ブロックずつ送り、既定で読み戻して一致を確認する |
-| 層1 | `L1_PcscModels.cs` | `PcscOptions` | 動作パラメータ。タイムアウト（既定 300000us）・重ね置きチェックのラウンド数（既定 8）・RF 起動待ち（既定 20ms）・書き込み後の読み戻し（既定 有効）・ログ出力先。範囲外は `Pcsc` のコンストラクタで例外 |
-| 層1 | `L1_PcscModels.cs` | `PcscResult` | API 共通の戻り値。ステータス・読み出しデータ・IDm・カードのステータスフラグ（未到達なら `0xFF`）・メッセージ・所要時間・原因の例外を保持する |
-| 層1 | `L1_PcscModels.cs` | `PcscStatus`（enum） | API が返すステータス 9 種（`Ok` / `InvalidArgument` / `NotConnected` / `AlreadyConnected` / `ReaderError` / `NoCard` / `MultipleCards` / `Indeterminate` / `CardRejected`） |
-| 層1 | `L1_DuplicateGuard.cs` | `DuplicateGuard`（static） | 重ね置きチェックの **Polling 観測ループ**。指定ラウンド数だけ Polling して IDm の和集合を集め、2 種類観測・RF 衝突・異常応答で打ち切る。判定はしない（[DuplicateGuard.md](DuplicateGuard.md)） |
-| 層1 | `L1_DuplicateGuard.cs` | `ScanObservation` | 1 回のスキャンで観測した事実。異なる IDm の集合と、`Unknown` / `Collision` / `NoResponse` の 3 フラグ |
-| 層2 | `L2_FelicaCommands.cs` | `Felica`（static） | **Polling** フレームの組み立てと、応答から対象カードの IDm を厳密に取り出す処理。対象カードを識別する定数（システムコード・IC 種別）もここにある |
-| 層2 | `L2_FelicaCommands.cs` | `FelicaLiteS`（static） | ユーザ領域（ブロック `0x00`..`0x0D`）の **Read / Write** コマンドの組み立てと応答解析。ブロック範囲の検証と、1 コマンドあたりの上限（Read 4 / Write 1 ブロック）もここで保証する |
-| 層2 | `L2_FelicaCommands.cs` | `FelicaResponseKind`（enum） | 読み書き応答の解析結果。`Ok` / `CardError`（カードがエラーを返した）/ `Malformed`（応答自体が信頼できない）を区別する |
-| 層3 | `L3_PcscResponse.cs` | `PcscResponse` | リーダ応答の **TLV**（`C0` / `92` / `96` / `97` + SW）を解析する。未知タグや途中で切れた TLV は失敗にする |
-| 層3 | `L3_PcscResponse.cs` | `TransceiveResult` | Transceive 1 回分の結果を `Ok` / `NoResponse` / `Collision` / `Unknown` の 4 フラグに分類し、受信フレームを保持する |
-| 層4 | `L4_PcscTransport.cs` | `IPcscTransport`（interface） | リーダ操作の抽象（Open / セッション開始・終了 / RF ON・OFF / プロトコル切替 / Transceive）。自己テストはこれを模擬実装に差し替える |
-| 層4 | `L4_PcscTransport.cs` | `RfProtocol`（enum） | `SwitchProtocol` に渡す RF プロトコルの種別 |
-| 層4 | `L4_PcscTransport.cs` | `Rcs300Transport` | `IPcscTransport` の**実機実装**。カードフレームを `FF 50` の封筒に包んで Escape（`SCardControl`）で送り、管理コマンドの応答を検証する |
-| 層5 | `L5_PcscNative.cs` | `Interop`（internal static） | winscard.dll の **P/Invoke** 宣言と定数、リーダ名の列挙、Escape 制御コードの取得 |
-| 層5 | `L5_PcscNative.cs` | `PcscException` | winscard の呼び出し失敗時に投げる例外。戻り値を `ReturnCode` で保持する。`Pcsc` が捕捉して `PcscResult` に変換するため、API 利用者には例外として届かない |
-| 共通 | `Common_Hex.cs` | `Hex`（static） | バイト列と 16 進文字列の相互変換、バイト列の比較 |
-| — | `Properties/AssemblyInfo.cs` | — | アセンブリ属性（タイトル・説明・GUID・バージョン 1.0.0.0）。従来形式プロジェクト用で、テストプロジェクトには含めない |
+| 層 | ファイル | 型 | 概要 | 解説 |
+|---|---|---|---|---|
+| 層1 | `L1_Pcsc.cs` | `Pcsc` | **公開 API 本体**。`ListReaders` / `Connect` / `Disconnect` / `Read` / `Write`。Read / Write のたびに Transparent Session を開き、重ね置きチェック → 判定（`Gate`）→ 読み書き → 後始末を 1 つの RF セッション内で行う。Write は 1 ブロックずつ送り、既定で読み戻して一致を確認する | [L1_Pcsc.md](docs/source/L1_Pcsc.md) |
+| 層1 | `L1_PcscModels.cs` | `PcscOptions` | 動作パラメータ。タイムアウト（既定 300000us）・重ね置きチェックのラウンド数（既定 8）・RF 起動待ち（既定 20ms）・書き込み後の読み戻し（既定 有効）・ログ出力先。範囲外は `Pcsc` のコンストラクタで例外 | [L1_PcscModels.md](docs/source/L1_PcscModels.md) |
+| 層1 | `L1_PcscModels.cs` | `PcscResult` | API 共通の戻り値。ステータス・読み出しデータ・IDm・カードのステータスフラグ（未到達なら `0xFF`）・メッセージ・所要時間・原因の例外を保持する | [L1_PcscModels.md](docs/source/L1_PcscModels.md) |
+| 層1 | `L1_PcscModels.cs` | `PcscStatus`（enum） | API が返すステータス 9 種（`Ok` / `InvalidArgument` / `NotConnected` / `AlreadyConnected` / `ReaderError` / `NoCard` / `MultipleCards` / `Indeterminate` / `CardRejected`） | [L1_PcscModels.md](docs/source/L1_PcscModels.md) |
+| 層1 | `L1_DuplicateGuard.cs` | `DuplicateGuard`（static） | 重ね置きチェックの **Polling 観測ループ**。指定ラウンド数だけ Polling して IDm の和集合を集め、2 種類観測・RF 衝突・異常応答で打ち切る。判定はしない（仕組みは [docs/DuplicateGuard.md](docs/DuplicateGuard.md)） | [L1_DuplicateGuard.md](docs/source/L1_DuplicateGuard.md) |
+| 層1 | `L1_DuplicateGuard.cs` | `ScanObservation` | 1 回のスキャンで観測した事実。異なる IDm の集合と、`Unknown` / `Collision` / `NoResponse` の 3 フラグ | [L1_DuplicateGuard.md](docs/source/L1_DuplicateGuard.md) |
+| 層2 | `L2_FelicaCommands.cs` | `Felica`（static） | **Polling** フレームの組み立てと、応答から対象カードの IDm を厳密に取り出す処理。対象カードを識別する定数（システムコード・IC 種別）もここにある | [L2_FelicaCommands.md](docs/source/L2_FelicaCommands.md) |
+| 層2 | `L2_FelicaCommands.cs` | `FelicaLiteS`（static） | ユーザ領域（ブロック `0x00`..`0x0D`）の **Read / Write** コマンドの組み立てと応答解析。ブロック範囲の検証と、1 コマンドあたりの上限（Read 4 / Write 1 ブロック）もここで保証する | [L2_FelicaCommands.md](docs/source/L2_FelicaCommands.md) |
+| 層2 | `L2_FelicaCommands.cs` | `FelicaResponseKind`（enum） | 読み書き応答の解析結果。`Ok` / `CardError`（カードがエラーを返した）/ `Malformed`（応答自体が信頼できない）を区別する | [L2_FelicaCommands.md](docs/source/L2_FelicaCommands.md) |
+| 層3 | `L3_PcscResponse.cs` | `PcscResponse` | リーダ応答の **TLV**（`C0` / `92` / `96` / `97` + SW）を解析する。未知タグや途中で切れた TLV は失敗にする | [L3_PcscResponse.md](docs/source/L3_PcscResponse.md) |
+| 層3 | `L3_PcscResponse.cs` | `TransceiveResult` | Transceive 1 回分の結果を `Ok` / `NoResponse` / `Collision` / `Unknown` の 4 フラグに分類し、受信フレームを保持する | [L3_PcscResponse.md](docs/source/L3_PcscResponse.md) |
+| 層4 | `L4_PcscTransport.cs` | `IPcscTransport`（interface） | リーダ操作の抽象（Open / セッション開始・終了 / RF ON・OFF / プロトコル切替 / Transceive）。自己テストはこれを模擬実装に差し替える | [L4_PcscTransport.md](docs/source/L4_PcscTransport.md) |
+| 層4 | `L4_PcscTransport.cs` | `RfProtocol`（enum） | `SwitchProtocol` に渡す RF プロトコルの種別 | [L4_PcscTransport.md](docs/source/L4_PcscTransport.md) |
+| 層4 | `L4_PcscTransport.cs` | `Rcs300Transport` | `IPcscTransport` の**実機実装**。カードフレームを `FF 50` の封筒に包んで Escape（`SCardControl`）で送り、管理コマンドの応答を検証する | [L4_PcscTransport.md](docs/source/L4_PcscTransport.md) |
+| 層5 | `L5_PcscNative.cs` | `Interop`（internal static） | winscard.dll の **P/Invoke** 宣言と定数、リーダ名の列挙、Escape 制御コードの取得 | [L5_PcscNative.md](docs/source/L5_PcscNative.md) |
+| 層5 | `L5_PcscNative.cs` | `PcscException` | winscard の呼び出し失敗時に投げる例外。戻り値を `ReturnCode` で保持する。`Pcsc` が捕捉して `PcscResult` に変換するため、API 利用者には例外として届かない | [L5_PcscNative.md](docs/source/L5_PcscNative.md) |
+| 共通 | `Common_Hex.cs` | `Hex`（static） | バイト列と 16 進文字列の相互変換、バイト列の比較 | [Common_Hex.md](docs/source/Common_Hex.md) |
+| — | `Properties/AssemblyInfo.cs` | — | アセンブリ属性（タイトル・説明・GUID・バージョン 1.0.0.0）。従来形式プロジェクト用で、テストプロジェクトには含めない | [AssemblyInfo.md](docs/source/AssemblyInfo.md) |
 
 ### 1.3 サンプル・テストのソース
 
-| ファイル | 概要 | ターゲット |
-|---|---|---|
-| `example/Program.cs` | 使い方サンプル（C の `main()` 相当）。リーダ検索 → Connect → Read →（`--write` 指定時のみ）Write → Disconnect の最小構成（§6） | .NET Framework 4.5 |
-| `test/PcscIfTest/Program.cs` | テスト用コンソールの入口。`selftest` / `list` / `read` / `write` / `loop` のコマンドを振り分け、実機での読み書きや重ね置き検出率の測定を行う（§7） | .NET 10 |
-| `test/PcscIfTest/SelfTest.cs` | リーダ不要の自己テスト 172 件。模擬トランスポート `FakeTransport` で 2 枚重ね・無応答・不正応答・書き込み失敗などを再現し、コマンド組み立て・応答解析・ユーザ領域の境界・Connect / Disconnect・Read・Write・オプションとログを検証する | .NET 10 |
+| ファイル | 概要 | ターゲット | 解説 |
+|---|---|---|---|
+| `example/Program.cs` | 使い方サンプル（C の `main()` 相当）。リーダ検索 → Connect → Read →（`--write` 指定時のみ）Write → Disconnect の最小構成（§6） | .NET Framework 4.5 | [example_Program.md](docs/source/example_Program.md) |
+| `test/PcscIfTest/Program.cs` | テスト用コンソールの入口。`selftest` / `list` / `read` / `write` / `loop` のコマンドを振り分け、実機での読み書きや重ね置き検出率の測定を行う（§7） | .NET 10 | [PcscIfTest_Program.md](docs/source/PcscIfTest_Program.md) |
+| `test/PcscIfTest/SelfTest.cs` | リーダ不要の自己テスト 279 件。模擬トランスポート `FakeTransport` で 2 枚重ね・無応答・不正応答・書き込み失敗などを再現し、コマンド組み立て・応答解析・ユーザ領域の境界・Connect / Disconnect・Read・Write・オプションとログに加え、重ね置きの観測ループ単体・並行呼び出し・16 進変換・実機トランスポートのリーダ不要な部分を検証する（1 件ごとの仕様は [docs/UnitTest.md](docs/UnitTest.md)） | .NET 10 | [PcscIfTest_SelfTest.md](docs/source/PcscIfTest_SelfTest.md) |
 
 ## 2. API
 
@@ -262,7 +265,8 @@ dotnet run --project test/PcscIfTest -- selftest
 | `write <reader> <hex> --yes [startBlock]` | 必要 | Connect → Write → Disconnect（**破壊的**。`--yes` 必須） |
 | `loop [reader] [count]` | 必要 | Read を繰り返し、ステータスの集計と所要時間を出す |
 
-`selftest` はリーダ不要なので CI に組み込めます。172 件のチェックを実行します。
+`selftest` はリーダ不要なので CI に組み込めます。279 件のチェックを実行します
+（1 件ごとの仕様は [docs/UnitTest.md](docs/UnitTest.md)）。
 
 実機での重ね置き確認は `loop` を使ってください。
 2 枚重ねた状態で `MultipleCards` が出ること、1 枚のときに `Ok` が出ることを、
@@ -275,10 +279,13 @@ dotnet run --project test/PcscIfTest -- selftest
 | `src/*.cs`（層と役割ごとにまとめた 8 ファイル）が .NET Framework 4.5 / C# 5.0 で警告 0・エラー 0 でコンパイルされる | 確認済み |
 | `src/PcscIf.csproj`（従来形式）が .NET Framework 付属の MSBuild と C# 5 コンパイラ（csc 4.8）でビルドできる | 確認済み |
 | `example/Program.cs` が .NET Framework 4.5 / C# 5.0 でコンパイルされる | 確認済み |
-| リーダ不要の自己テスト 172 件 | 全件 PASS |
+| `test/PcscIfTest/*.cs` が `src/*.cs` と一緒に C# 5 コンパイラ（csc 4.8）でコンパイルされる | 確認済み |
+| リーダ不要の自己テスト 279 件 | 全件 PASS |
 | 実機での Connect / Disconnect / Read / Write | **確認済み**（下記） |
 | 実機での重ね置き検出 | **確認済み**（下記） |
 | 実機での `example` の実行（リーダ検索 → open → read → write → close） | **確認済み**（下記） |
+| 実機でのリーダ一覧の取得・リーダの自動選択（リーダ 1 台）・カード無し（`NoCard`） | **確認済み**（8.2） |
+| 実機での 2 枚重ねの書き込み阻止（試行後に 1 枚ずつ読み直し、2 枚とも書き換わっていないことを確認） | **確認済み**（8.1・8.2） |
 | Visual Studio 2013 の IDE でのビルド | **未実施**（検証環境に VS2013 が無いため） |
 
 ### 8.1 実機検証の結果
@@ -359,3 +366,64 @@ IDm    : <IDm>
 - 重ね方は「中心・密着」1 条件のみです。ずらし置き・浮き・3 枚以上は未測定です。
   §3 のとおり **RF 応答を返さない 2 枚目は原理的に検出できない**ため、
   実運用の設置条件ごとに `loop` で試行回数を決めて測定してください。
+
+### 8.2 実機での再確認（2026-09-16）
+
+自己テストを 279 件に拡充した後、対象リーダ 1 台と対象カード 2 枚で、実機での動作を改めて確認しました。
+オプションはすべて既定値です。カードの IDm はこの文書には記載しません（以下「1 枚目」「2 枚目」と呼びます）。
+
+実行には、`src/*.cs` と `test/PcscIfTest/*.cs` を C# 5 コンパイラ（csc 4.8）でビルドした `PcscIfTest`
+（.NET Framework 4.8 ランタイム）を使いました。.NET 10 のビルドは、検証端末のアプリケーション制御ポリシーにより
+起動できなかったためです。ソースは同一です。
+
+**リーダ一覧・自動選択・読み出し**（1 枚目を置いた状態）
+
+| 条件 | 結果 |
+|---|---|
+| `list` | リーダ 1 台を列挙 |
+| `read`（リーダ名を省略 = `Connect()` の自動選択） | 最初のリーダに接続し `Ok` / `SF=0000` / 16 バイト（181ms） |
+| `read` リーダ名指定（ブロック 0 から 1 / 0 から 4 / 13 から 1） | すべて `Ok`（147〜169ms） |
+| `read` 5 ブロック | I/O 前に `InvalidArgument`（0ms） |
+| `read` 存在しないリーダ名 | `ReaderError`（`SCardConnect` が `0x80100009`） |
+| `loop` 20 回 | `Ok` 20 / 毎回同じ IDm / median 167ms / max 192ms |
+
+リーダは 1 台だけだったので、自動選択の確認は「1 台のときにそのリーダを選ぶ」ことに限られます。
+
+**書き込み**（1 枚目。書き込み前の内容を保存し、最後に書き戻した）
+
+| 条件 | 結果 |
+|---|---|
+| 16 バイトをブロック 0 に `write` | `Ok`（読み戻し一致、193ms）。別セッションで読むとブロック 0 は書いた値、ブロック 1 は元のまま |
+| 80 バイト（5 ブロック）をブロック 0〜4 に `write` | `Ok`（読み戻しは 4 + 1 に分割、248ms）。別セッションでブロック 0〜4 は書いた値、ブロック 5 は元のまま |
+| 10 バイト（16 の倍数でない）/ ブロック 13 から 32 バイト | どちらも `InvalidArgument`。直後に読んでもカードは変化なし |
+| 元の内容を書き戻し | `Ok`（245ms）。ブロック 0〜7 と 13 が書き込み前と完全一致 |
+
+**カード無し**
+
+| 条件 | 結果 |
+|---|---|
+| `read`（自動選択 / 名前指定・4 ブロック） | `NoCard`（2461〜2468ms）。IDm・SF・データは報告しない |
+| `write` 16 バイト | `NoCard`（2460ms） |
+| `loop` 5 回 | `NoCard` 5 / median 2467ms / max 2476ms |
+| `list` と `Connect` / `Disconnect` | 成功（カードが無くてもリーダは使える） |
+
+カード無しの判定に約 2.5 秒かかるのは、8 ラウンドの Polling がそれぞれタイムアウト（300ms）まで待つためです。
+
+**2 枚重ね**（中心・密着）
+
+| 条件 | 試行 | 結果 |
+|---|---|---|
+| `read`（自動選択 / 名前指定） | 各 1 | `MultipleCards`。メッセージに 2 種類の IDm |
+| `loop` | 50 | `MultipleCards` 50 / **見逃し 0** / 毎回同じ 2 枚 / median 58ms / max 704ms |
+| `write` 1 ブロック（`A5` × 16） | 10 | `MultipleCards` 10 / **すり抜け 0** |
+| `write` 5 ブロック（`5A` × 80） | 5 | `MultipleCards` 5 / **すり抜け 0** |
+
+- `loop` の所要時間は、41〜82ms（29 回）、353〜414ms（17 回）、651〜702ms（4 回）に分かれました。
+  1 ラウンド目で 2 枚とも見えて打ち切った場合と、応答の得られないラウンドを 1〜2 回挟んだ場合と考えられます（推測）。
+- 書き込みの試行前後とも 2 枚重ねとして検出されており、試行中に置き方がずれていないことを確認しています。
+- 試行の前に 2 枚目だけを置いて 14 ブロック全体を保存し、試行の後に 1 枚ずつ置いて読み直しました。
+  **2 枚目は 14 ブロックすべてが試行前と一致、1 枚目は書き込み対象を含むブロック 0〜7 と 13 が試行前と一致**し、
+  試行データ（`A5` / `5A`）はどちらのカードにも書かれていませんでした
+  （1 枚目のブロック 8〜12 は試行前の記録が無いため比較していません。いずれも試行の対象外のブロックで、読み出した値はすべて `00` でした）。
+
+各試行の詳細は [docs/UnitTest.md](docs/UnitTest.md) の §16 にあります。

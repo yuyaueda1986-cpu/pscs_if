@@ -5,7 +5,7 @@
 //    FelicaLiteS         ユーザデータ領域の Read / Write
 //    FelicaResponseKind  読み書き応答の解析結果の分類
 //
-//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は protocol.md §4 を参照。
+//  層構成は L1_Pcsc.cs 先頭のコメント、バイト列は docs/protocol.md §4 を参照。
 // ===========================================================================
 
 using System;
